@@ -28,6 +28,8 @@ struct Host {
     address: String,
     http_port: u16,
     #[serde(default)]
+    unique_id: Option<String>,
+    #[serde(default)]
     cache: HostCache,
     paired: Option<PairedHost>,
 }
@@ -42,6 +44,7 @@ pub struct RuntimeApiHost {
     pub cache: HostCache,
     pub moonlight: ReqwestMoonlightHost,
     pub app_images_cache: HashMap<u32, Bytes>,
+    pub configured_unique_id: Option<String>,
 }
 
 impl RuntimeApiHost {
@@ -84,8 +87,9 @@ impl RuntimeApiData {
 
         let mut hosts = Slab::new();
         let loaded_hosts = join_all(data.hosts.into_iter().map(|host_data| async move {
+            let unique_id_for_init = host_data.unique_id.clone();
             let mut host =
-                match ReqwestMoonlightHost::new(host_data.address, host_data.http_port, None) {
+                match ReqwestMoonlightHost::new(host_data.address, host_data.http_port, unique_id_for_init) {
                     Ok(value) => value,
                     Err(err) => {
                         warn!("[Load]: failed to load host: {err:?}");
@@ -101,6 +105,7 @@ impl RuntimeApiData {
                 cache: host_data.cache,
                 moonlight: host,
                 app_images_cache: Default::default(),
+                configured_unique_id: host_data.unique_id,
             })
         }))
         .await;
@@ -146,6 +151,7 @@ impl RuntimeApiData {
             output.hosts.push(Host {
                 address: host.moonlight.address().to_string(),
                 http_port: host.moonlight.http_port(),
+                unique_id: host.configured_unique_id.clone(),
                 cache: host.cache.clone(),
                 paired,
             });

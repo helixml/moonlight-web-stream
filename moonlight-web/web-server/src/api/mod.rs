@@ -136,6 +136,7 @@ async fn put_host(
         },
         moonlight: host,
         app_images_cache: Default::default(),
+        configured_unique_id: None,
     }));
 
     drop(hosts);
@@ -238,6 +239,9 @@ async fn pair_host(
 
             let bytes = Bytes::from_owner(text);
             yield Ok::<_, Error>(bytes);
+
+        // Clear cache to allow pairing even if previous connection attempt failed
+        host.moonlight.clear_cache();
 
         if let Err(err) = host.moonlight
             .pair(
