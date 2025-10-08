@@ -26,7 +26,7 @@ simplelog = "0.12.2"
 printf-compat = { version = "0.2.1" }
 
 # Util
-slab = "0.4.10"
+slab = "0.4.11"
 ts-rs = "11.0.1"
 
 # Async
