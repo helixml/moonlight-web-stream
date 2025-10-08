@@ -200,6 +200,7 @@ pub enum PairError<RequestError> {
 pub async fn host_pair<C: RequestClient>(
     client: &mut C,
     http_address: &str,
+    https_address: &str,
     client_info: ClientInfo<'_>,
     client_private_key_pem: &Pem,
     client_certificate_pem: &Pem,
@@ -369,7 +370,7 @@ pub async fn host_pair<C: RequestClient>(
     // Required for us to show as paired
     let server_response5 = host_pair5(
         client,
-        http_address,
+        https_address,
         client_info,
         ClientPairRequest5 { device_name },
     )

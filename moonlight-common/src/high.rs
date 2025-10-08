@@ -326,6 +326,7 @@ where
         pin: PairPin,
     ) -> Result<(), HostError<C::Error>> {
         let http_address = self.http_address();
+        let https_address = self.https_address().await?;
         let server_version = self.version().await?;
 
         let client_info = ClientInfo {
@@ -338,6 +339,7 @@ where
         let PairSuccess { server_certificate } = host_pair(
             &mut client,
             &http_address,
+            &https_address,
             client_info,
             &auth.private_key,
             &auth.certificate,
