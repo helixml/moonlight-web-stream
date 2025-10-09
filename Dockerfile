@@ -41,6 +41,7 @@ WORKDIR /app
 
 # Copy binaries from builder
 COPY --from=builder /build/target/release/web-server /app/web-server
+COPY --from=builder /build/target/release/streamer /app/streamer
 
 # Copy web assets
 COPY --from=builder /build/moonlight-web/web-server/dist /app/static

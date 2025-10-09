@@ -368,8 +368,16 @@ pub async fn host_pair<C: RequestClient>(
     }
 
     // Required for us to show as paired
+    // Create new HTTPS client with mutual TLS certificates for Phase 5
+    let mut https_client = C::with_certificates(
+        client_private_key_pem,
+        client_certificate_pem,
+        &server_cert_pem,
+    )
+    .map_err(|e| PairError::Api(ApiError::RequestClient(e)))?;
+
     let server_response5 = host_pair5(
-        client,
+        &mut https_client,
         https_address,
         client_info,
         ClientPairRequest5 { device_name },
