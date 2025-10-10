@@ -49,6 +49,9 @@ COPY --from=builder /build/moonlight-web/web-server/dist /app/static
 # Create config directory
 RUN mkdir -p /server
 
+# Enable trace logging for debugging UDP/streaming issues
+ENV RUST_LOG=moonlight_common=trace,moonlight_web=trace
+
 # Expose web server port
 EXPOSE 8080
 
