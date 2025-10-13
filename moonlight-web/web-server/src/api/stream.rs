@@ -1,4 +1,4 @@
-use std::{process::Stdio, time::Duration};
+use std::{process::Stdio, sync::Arc};
 
 use actix_web::{
     Either, Error, HttpRequest, HttpResponse, get, post, rt as actix_rt,
@@ -8,7 +8,7 @@ use actix_ws::{Closed, Message, Session};
 use common::{
     StreamSettings,
     api_bindings::{
-        PostCancelRequest, PostCancelResponse, StreamClientMessage, StreamServerMessage,
+        PostCancelRequest, PostCancelResponse, StreamClientMessage, StreamServerMessage, SessionMode,
     },
     config::Config,
     ipc::{ServerIpcMessage, StreamerIpcMessage, create_child_ipc},
@@ -16,7 +16,7 @@ use common::{
 };
 use log::{debug, info, warn};
 use moonlight_common::{PairStatus, stream::bindings::SupportedVideoFormats};
-use tokio::{process::Command, spawn, time::sleep};
+use tokio::{process::Command, spawn, sync::Mutex};
 
 use crate::data::RuntimeApiData;
 
@@ -59,6 +59,8 @@ pub async fn start_host(
 
         let StreamClientMessage::AuthenticateAndInit {
             credentials,
+            session_id,
+            mode,
             host_id,
             app_id,
             bitrate,
@@ -80,6 +82,71 @@ pub async fn start_host(
 
         if credentials != config.credentials {
             return;
+        }
+
+        // Check if session already exists
+        let sessions = data.sessions.read().await;
+        let existing_session = sessions.get(&session_id).cloned();
+        drop(sessions);
+
+        // Handle existing sessions based on mode
+        match (&existing_session, mode) {
+            // Case 1: Session exists, mode=Join → Kick old client, attach new WebSocket
+            (Some(stream_session), SessionMode::Join) => {
+                info!("[Stream]: Joining existing session {}, kicking old client", session_id);
+
+                // Kick old WebSocket client
+                let mut ws_lock = stream_session.websocket.lock().await;
+                if let Some(mut old_ws) = ws_lock.take() {
+                    let _ = send_ws_message(&mut old_ws, StreamServerMessage::ClientKicked).await;
+                    let _ = old_ws.close(None).await;
+                }
+                *ws_lock = Some(session);
+                drop(ws_lock);
+
+                // Forward WebSocket messages to existing IPC
+                while let Some(Ok(Message::Text(text))) = stream.recv().await {
+                    let Ok(message) = serde_json::from_str::<StreamClientMessage>(&text) else {
+                        warn!("[Stream]: failed to deserialize WebSocket message");
+                        continue;
+                    };
+
+                    let mut ipc_sender = stream_session.ipc_sender.lock().await;
+                    ipc_sender.send(ServerIpcMessage::WebSocket(message)).await;
+                }
+
+                // When WebSocket disconnects, set to None (back to keepalive mode)
+                let mut ws_lock = stream_session.websocket.lock().await;
+                *ws_lock = None;
+
+                return;
+            }
+
+            // Case 2: Session exists, mode=Keepalive → Close WebSocket (no WebRTC needed)
+            (Some(_), SessionMode::Keepalive) => {
+                info!("[Stream]: Keepalive mode for existing session {} - no WebRTC needed", session_id);
+                let _ = session.close(None).await;
+                return;
+            }
+
+            // Case 3: Session exists, mode=Create → Error (already exists)
+            (Some(_), SessionMode::Create) => {
+                let _ = send_ws_message(&mut session, StreamServerMessage::AlreadyStreaming).await;
+                let _ = session.close(None).await;
+                return;
+            }
+
+            // Case 4: No session, mode=Join → Error (can't join non-existent)
+            (None, SessionMode::Join) => {
+                let _ = send_ws_message(&mut session, StreamServerMessage::SessionNotFound).await;
+                let _ = session.close(None).await;
+                return;
+            }
+
+            // Case 5: No session, mode=Create or Keepalive → Create new session (below)
+            (None, SessionMode::Create | SessionMode::Keepalive) => {
+                info!("[Stream]: Creating new session {} with mode {:?}", session_id, mode);
+            }
         }
 
         let stream_settings = StreamSettings {
@@ -223,16 +290,42 @@ pub async fn start_host(
             )
             .await;
 
+        // Create and store the session
+        use crate::data::StreamSession;
+        let stream_session = Arc::new(StreamSession {
+            session_id: session_id.clone(),
+            streamer: Mutex::new(child),
+            ipc_sender: Mutex::new(ipc_sender.clone()),
+            websocket: Mutex::new(if mode == SessionMode::Keepalive {
+                None  // Keepalive mode: no WebSocket attached
+            } else {
+                Some(session.clone())
+            }),
+            mode,
+        });
+
+        // Store session in global map
+        {
+            let mut sessions = data.sessions.write().await;
+            sessions.insert(session_id.clone(), stream_session.clone());
+        }
+
         // Redirect ipc message into ws
+        let session_clone = stream_session.clone();
+        let data_clone = data.clone();
         spawn(async move {
             while let Some(message) = ipc_receiver.recv().await {
                 match message {
                     StreamerIpcMessage::WebSocket(message) => {
-                        if let Err(Closed) = send_ws_message(&mut session, message).await {
-                            warn!(
-                                "[Ipc]: Tried to send a ws message but the socket is already closed"
-                            );
+                        let mut ws_lock = session_clone.websocket.lock().await;
+                        if let Some(ws) = &mut *ws_lock {
+                            if let Err(Closed) = send_ws_message(ws, message).await {
+                                warn!(
+                                    "[Ipc]: Tried to send a ws message but the socket is already closed"
+                                );
+                            }
                         }
+                        // If websocket is None (keepalive mode), just drop the message
                     }
                     StreamerIpcMessage::Stop => {
                         debug!("[Ipc]: ipc receiver stopped by streamer");
@@ -242,9 +335,31 @@ pub async fn start_host(
             }
             info!("[Ipc]: ipc receiver is closed");
 
-            // close the websocket when the streamer crashed / disconnected / whatever
-            let _ = session.close(None).await;
+            // Cleanup session based on mode
+            if session_clone.mode != SessionMode::Keepalive {
+                info!("[Stream]: Cleaning up non-keepalive session {}", session_clone.session_id);
+                let mut sessions = data_clone.sessions.write().await;
+                sessions.remove(&session_clone.session_id);
+
+                // Kill streamer for non-keepalive sessions
+                use tokio::process::Child;
+                let mut streamer: tokio::sync::MutexGuard<Child> = session_clone.streamer.lock().await;
+                if let Err(err) = streamer.kill().await {
+                    warn!("[Stream]: failed to kill streamer: {err:?}");
+                }
+            } else {
+                info!("[Stream]: Keepalive session {} persisting after IPC closed", session_clone.session_id);
+            }
+
+            // Close the websocket if it's still attached
+            use actix_ws::Session;
+            let mut ws_lock: tokio::sync::MutexGuard<Option<Session>> = session_clone.websocket.lock().await;
+            if let Some(ws) = ws_lock.take() {
+                let _ = ws.close(None).await;
+            }
         });
+
+        let mut ipc_sender_clone = ipc_sender.clone();
 
         // Send init into ipc
         ipc_sender
@@ -261,30 +376,27 @@ pub async fn start_host(
             })
             .await;
 
-        // Redirect ws message into ipc
-        while let Some(Ok(Message::Text(text))) = stream.recv().await {
-            let Ok(message) = serde_json::from_str::<StreamClientMessage>(&text) else {
-                warn!("[Stream]: failed to deserialize from json");
-                return;
-            };
+        // Redirect ws message into ipc (only if WebSocket is attached)
+        if mode != SessionMode::Keepalive {
+            while let Some(Ok(Message::Text(text))) = stream.recv().await {
+                let Ok(message) = serde_json::from_str::<StreamClientMessage>(&text) else {
+                    warn!("[Stream]: failed to deserialize from json");
+                    return;
+                };
 
-            ipc_sender.send(ServerIpcMessage::WebSocket(message)).await;
-        }
-
-        // -- After the websocket disconnects we kill the stream:
-        ipc_sender.send(ServerIpcMessage::Stop).await;
-        drop(ipc_sender);
-
-        sleep(Duration::from_secs(4)).await;
-
-        info!("[Stream]: killing streamer");
-        match child.kill().await {
-            Ok(_) => {
-                info!("[Stream]: killed streamer");
+                use common::ipc::IpcSender;
+                let mut ipc: tokio::sync::MutexGuard<IpcSender<ServerIpcMessage>> = stream_session.ipc_sender.lock().await;
+                ipc.send(ServerIpcMessage::WebSocket(message)).await;
             }
-            Err(err) => {
-                warn!("[Stream]: failed to kill child: {err:?}");
-            }
+
+            // WebSocket disconnected - set to None (session goes to keepalive mode)
+            info!("[Stream]: WebSocket disconnected for session {}, entering keepalive mode", session_id);
+            let mut ws_lock = stream_session.websocket.lock().await;
+            *ws_lock = None;
+        } else {
+            // Keepalive mode: close WebSocket immediately (no WebRTC needed)
+            info!("[Stream]: Keepalive mode - closing WebSocket, streamer will run headless");
+            let _ = session.close(None).await;
         }
     });
 

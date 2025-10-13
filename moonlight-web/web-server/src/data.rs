@@ -1,6 +1,11 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use actix_web::web::{Bytes, Data};
+use actix_ws::Session;
+use common::{
+    api_bindings::SessionMode,
+    ipc::{ServerIpcMessage, IpcSender},
+};
 use futures::future::join_all;
 use log::{info, warn};
 use moonlight_common::{
@@ -9,7 +14,7 @@ use moonlight_common::{
 use serde::{Deserialize, Serialize};
 use slab::Slab;
 use tokio::{
-    fs, spawn,
+    fs, process::Child, spawn,
     sync::{
         Mutex, RwLock,
         mpsc::{Receiver, Sender, channel},
@@ -75,10 +80,20 @@ pub struct HostCache {
     pub mac: Option<MacAddress>,
 }
 
+/// Persistent streaming session that survives WebSocket disconnects
+pub struct StreamSession {
+    pub session_id: String,
+    pub streamer: Mutex<Child>,
+    pub ipc_sender: Mutex<IpcSender<ServerIpcMessage>>,
+    pub websocket: Mutex<Option<Session>>,  // None when in keepalive mode
+    pub mode: SessionMode,
+}
+
 pub struct RuntimeApiData {
     // TODO: make this private, make the save fn internal, only expose fn which uses this filer_writer sender to try_send on it
     pub(crate) file_writer: Sender<()>,
     pub(crate) hosts: RwLock<Slab<Mutex<RuntimeApiHost>>>,
+    pub(crate) sessions: RwLock<HashMap<String, Arc<StreamSession>>>,  // NEW: persistent sessions
 }
 
 impl RuntimeApiData {
@@ -123,6 +138,7 @@ impl RuntimeApiData {
         let this = Data::new(Self {
             file_writer,
             hosts: RwLock::new(hosts),
+            sessions: RwLock::new(HashMap::new()),  // NEW: initialize empty sessions map
         });
 
         spawn({

@@ -235,11 +235,22 @@ pub enum StreamSignalingMessage {
     AddIceCandidate(RtcIceCandidate),
 }
 
+#[derive(Serialize, Deserialize, Debug, TS, Clone, Copy, PartialEq, Eq)]
+#[ts(export, export_to = EXPORT_PATH)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionMode {
+    Create,    // Create new session (fail if already exists)
+    Keepalive, // Create if missing, or join existing without WebRTC peer
+    Join,      // Join existing session, kick any connected client
+}
+
 #[derive(Serialize, Deserialize, Debug, TS)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum StreamClientMessage {
     AuthenticateAndInit {
         credentials: String,
+        session_id: String,    // NEW: session identifier for persistence
+        mode: SessionMode,     // NEW: how to handle existing sessions
         host_id: u32,
         app_id: u32,
         bitrate: u32,
@@ -289,6 +300,8 @@ pub enum StreamServerMessage {
     AppNotFound,
     HostNotPaired,
     AlreadyStreaming,
+    SessionNotFound,   // NEW: session doesn't exist (can't join non-existent session)
+    ClientKicked,      // NEW: notify client they were kicked by another client
     StageStarting {
         stage: String,
     },
