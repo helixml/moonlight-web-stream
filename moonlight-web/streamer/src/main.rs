@@ -574,9 +574,24 @@ impl StreamConnection {
             }
             ServerIpcMessage::ClientJoined => {
                 // Browser client joined the keepalive session
-                // If Moonlight stream terminated, restart it for the browser
                 info!("[Keepalive]: Browser client joined keepalive session");
 
+                // Send WebRTC configuration to the new browser client
+                // The browser needs this to create its WebRTC peer
+                let ice_servers: Vec<_> = self.peer.get_configuration().await.ice_servers.iter()
+                    .cloned()
+                    .map(from_webrtc_ice)
+                    .collect();
+
+                self.ipc_sender.clone()
+                    .send(StreamerIpcMessage::WebSocket(
+                        StreamServerMessage::WebRtcConfig { ice_servers }
+                    ))
+                    .await;
+
+                info!("[Keepalive]: Sent WebRtcConfig to joining browser client");
+
+                // If Moonlight stream terminated, restart it
                 let stream_active = {
                     let stream_guard = self.stream.read().await;
                     stream_guard.is_some()
