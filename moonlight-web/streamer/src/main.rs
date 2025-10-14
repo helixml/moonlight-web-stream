@@ -656,6 +656,27 @@ impl StreamConnection {
                     }
                 } else {
                     info!("[Keepalive]: Moonlight stream already active, WebRTC will attach");
+
+                    // Send ConnectionComplete to browser since stream is already running
+                    // This dismisses the "Stream connected" spinner and enables controls
+                    let (width, height) = {
+                        let video_size = self.video_size.lock().await;
+                        if *video_size == (0, 0) {
+                            (self.settings.width, self.settings.height)
+                        } else {
+                            *video_size
+                        }
+                    };
+
+                    self.ipc_sender.clone()
+                        .send(StreamerIpcMessage::WebSocket(
+                            StreamServerMessage::ConnectionComplete {
+                                capabilities: StreamCapabilities { touch: false },
+                                width,
+                                height,
+                            },
+                        ))
+                        .await;
                 }
             }
             ServerIpcMessage::Stop => {
