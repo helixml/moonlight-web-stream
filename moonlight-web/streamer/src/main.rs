@@ -421,12 +421,35 @@ impl StreamConnection {
         // This launches the Wolf container and begins streaming frames (which are thrown away)
         // When a real client Joins later, the existing peer will be used for WebRTC
         if keepalive_mode {
-            info!("[Keepalive]: Starting Moonlight stream immediately (no WebRTC needed yet)");
+            info!("[Keepalive]: Starting Moonlight stream with auto-restart");
             let this_clone = this.clone();
             spawn(async move {
-                if let Err(err) = this_clone.start_stream().await {
-                    warn!("[Keepalive]: failed to start stream: {err:?}");
-                    this_clone.stop().await;
+                loop {
+                    match this_clone.start_stream().await {
+                        Ok(_) => {
+                            info!("[Keepalive]: Moonlight stream started successfully");
+                        }
+                        Err(err) => {
+                            warn!("[Keepalive]: Failed to start stream: {err:?}");
+                        }
+                    }
+
+                    // Wait and check if stream is still alive
+                    // Stream termination removes it from self.stream
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+                        let stream_guard = this_clone.stream.read().await;
+                        let stream_alive = stream_guard.is_some();
+                        drop(stream_guard);
+
+                        if !stream_alive {
+                            warn!("[Keepalive]: Moonlight stream terminated, restarting in 5 seconds...");
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            break; // Exit inner loop to restart stream
+                        }
+                    }
+                    // Outer loop continues to restart
                 }
             });
         }
