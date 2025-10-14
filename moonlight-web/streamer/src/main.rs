@@ -549,24 +549,24 @@ impl StreamConnection {
             ServerIpcMessage::WebSocket(message) => {
                 self.on_ws_message(message).await;
             }
-            // Multi-peer messages (Phase 5 - not yet fully implemented)
             ServerIpcMessage::StartMoonlight => {
-                // TODO Phase 5: Start Moonlight without WebRTC
-                warn!("[IPC]: StartMoonlight not yet implemented");
+                info!("[IPC]: StartMoonlight not yet supported in legacy mode");
+                // Note: start_stream requires Arc<Self>, not available in this context
+                // This will be properly implemented when full multi-peer is complete
+                warn!("[IPC]: StartMoonlight requires full multi-peer implementation");
             }
             ServerIpcMessage::AddPeer { peer_id } => {
-                // TODO Phase 5: Create new RTCPeerConnection for this peer
-                warn!("[IPC]: AddPeer {} not yet implemented", peer_id);
+                info!("[IPC]: Adding peer {}", peer_id);
+                if let Err(err) = self.add_peer(peer_id).await {
+                    warn!("[IPC]: Failed to add peer: {err:?}");
+                }
             }
             ServerIpcMessage::FromPeer { peer_id, message } => {
-                // TODO Phase 5: Route message to correct peer
-                warn!("[IPC]: FromPeer {} not yet implemented", peer_id);
-                // For now, treat like legacy WebSocket message
-                self.on_ws_message(message).await;
+                self.on_peer_message(peer_id, message).await;
             }
             ServerIpcMessage::RemovePeer { peer_id } => {
-                // TODO Phase 5: Remove peer, unsubscribe from broadcasters
-                warn!("[IPC]: RemovePeer {} not yet implemented", peer_id);
+                info!("[IPC]: Removing peer {}", peer_id);
+                self.remove_peer(&peer_id).await;
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;
@@ -775,6 +775,42 @@ impl StreamConnection {
         stream_guard.replace(stream);
 
         Ok(())
+    }
+
+    // Multi-peer management methods
+    async fn add_peer(&self, peer_id: String) -> Result<(), anyhow::Error> {
+        // For now, just log - full implementation requires recreating API
+        // This is a simplified version that acknowledges the peer
+        info!("[Peer]: Added peer {} (simplified mode)", peer_id);
+
+        // Send acknowledgment
+        let mut sender = self.ipc_sender.clone();
+        sender.send(StreamerIpcMessage::ToPeer {
+            peer_id: peer_id.clone(),
+            message: StreamServerMessage::WebRtcConfig {
+                ice_servers: self.rtc_config.ice_servers.iter().cloned().map(from_webrtc_ice).collect(),
+            }
+        }).await;
+
+        Ok(())
+    }
+
+    async fn on_peer_message(&self, peer_id: String, message: StreamClientMessage) {
+        debug!("[Peer {}]: Received message", peer_id);
+        // Route to legacy handler for now
+        self.on_ws_message(message).await;
+    }
+
+    async fn remove_peer(&self, peer_id: &str) {
+        info!("[Peer]: Removing peer {}", peer_id);
+
+        // Cleanup from aggregators
+        self.video_broadcaster.unsubscribe(peer_id).await;
+        self.audio_broadcaster.unsubscribe(peer_id).await;
+        self.input_aggregator.remove_peer(peer_id).await;
+
+        // Remove from peers map
+        self.peers.write().await.remove(peer_id);
     }
 
     async fn stop(&self) {
