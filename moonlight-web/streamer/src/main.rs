@@ -70,6 +70,7 @@ mod buffer;
 mod connection;
 mod convert;
 mod input;
+mod input_aggregator;
 mod peer;
 mod sender;
 mod video;
@@ -303,15 +304,18 @@ struct StreamConnection {
     pub video_broadcaster: Arc<broadcaster::VideoBroadcaster>,
     pub audio_broadcaster: Arc<broadcaster::AudioBroadcaster>,
 
+    // Input aggregation (Phase 3)
+    pub input_aggregator: Arc<input_aggregator::InputAggregator>,
+
     // IPC
     pub ipc_sender: IpcSender<StreamerIpcMessage>,
 
-    // Input
+    // Legacy: Input handler for backward compatibility
     pub input: StreamInput,
     // Video
     pub video_size: Mutex<(u32, u32)>,
-    // Stream
-    pub stream: RwLock<Option<MoonlightStream>>,
+    // Stream (Arc wrapper for sharing with input_aggregator)
+    pub stream: Arc<RwLock<Option<MoonlightStream>>>,
     pub terminate: Notify,
 }
 
@@ -346,6 +350,9 @@ impl StreamConnection {
 
         let general_channel = peer.create_data_channel("general", None).await?;
 
+        // Create shared stream reference for input aggregator
+        let stream = Arc::new(RwLock::new(None));
+
         let this = Arc::new(Self {
             runtime: Handle::current(),
             moonlight,
@@ -357,10 +364,11 @@ impl StreamConnection {
             rtc_config: config.clone(),
             video_broadcaster: broadcaster::VideoBroadcaster::new(),
             audio_broadcaster: broadcaster::AudioBroadcaster::new(),
+            input_aggregator: input_aggregator::InputAggregator::new(stream.clone()),
             ipc_sender,
             video_size: Mutex::new((0, 0)),
             input,
-            stream: Default::default(),
+            stream,
             terminate: Notify::new(),
         });
 
