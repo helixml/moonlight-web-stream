@@ -462,8 +462,26 @@ impl StreamConnection {
 
     // -- Handle Connection State
     async fn on_ice_connection_state_change(self: &Arc<Self>, state: RTCIceConnectionState) {
+        info!("ICE connection state changed: {:?}", state);
+
         #[allow(clippy::collapsible_if)]
         if matches!(state, RTCIceConnectionState::Connected) {
+            // In keepalive mode, stream is already running - don't try to start it again
+            // Otherwise we get ConnectionAlreadyExists error
+            if self.keepalive_mode {
+                let stream_active = {
+                    let stream_guard = self.stream.read().await;
+                    stream_guard.is_some()
+                };
+
+                if stream_active {
+                    info!("[Keepalive]: ICE connected, Moonlight stream already active");
+                    return;
+                } else {
+                    info!("[Keepalive]: ICE connected but stream inactive, starting now");
+                }
+            }
+
             if let Err(err) = self.start_stream().await {
                 warn!("[Stream]: failed to start stream: {err:?}");
 
