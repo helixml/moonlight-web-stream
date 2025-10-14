@@ -591,22 +591,12 @@ impl StreamConnection {
                     ))
                     .await;
 
-                // If the keepalive peer already has a local offer, send it to the browser
-                // The browser will respond with an answer (instead of sending its own offer)
-                if let Some(local_desc) = self.peer.local_description().await {
-                    info!("[Keepalive]: Sending existing local offer to browser: {:?}", local_desc.sdp_type);
-                    self.ipc_sender.clone()
-                        .send(StreamerIpcMessage::WebSocket(
-                            StreamServerMessage::Signaling(StreamSignalingMessage::Description(
-                                RtcSessionDescription {
-                                    ty: from_webrtc_sdp(local_desc.sdp_type),
-                                    sdp: local_desc.sdp,
-                                },
-                            )),
-                        ))
-                        .await;
-                } else {
-                    info!("[Keepalive]: No local offer yet, browser will initiate");
+                // Create a fresh offer for the new browser connection
+                // Don't reuse cached offer - peer state may be stale (Stable from previous connection)
+                // This triggers fresh ICE negotiation
+                info!("[Keepalive]: Creating fresh offer for browser");
+                if !self.send_offer().await {
+                    warn!("[Keepalive]: Failed to create offer for joining browser");
                 }
 
                 // If Moonlight stream terminated, restart it
