@@ -31,6 +31,7 @@ use common::api_bindings::{
 
 mod auth;
 mod stream;
+mod streamers;
 
 #[get("/authenticate")]
 async fn authenticate() -> impl Responder {
@@ -426,10 +427,14 @@ async fn get_app_image(
 }
 
 pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl HttpServiceFactory {
+    // Create streamer registry
+    let streamer_registry = streamers::StreamerRegistry::new();
+
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))
         .app_data(ApiCredentials(credentials))
         .app_data(data)
+        .app_data(Data::new(streamer_registry))
         .service(services![
             authenticate,
             stream::start_host,
@@ -442,6 +447,14 @@ pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl Http
             pair_host,
             get_apps,
             get_app_image,
+        ])
+        .service(services![
+            // New streamer endpoints (Phase 4-5)
+            streamers::create_streamer,
+            streamers::list_streamers,
+            streamers::get_streamer,
+            streamers::delete_streamer,
+            streamers::connect_peer,
         ])
 }
 
