@@ -81,6 +81,7 @@ export class Stream {
                 credentials: this.api.credentials,
                 session_id: `browser-${Date.now()}-${Math.random()}`,  // NEW: unique session ID for browser
                 mode: "create",  // NEW: browser clients always create new sessions
+                client_unique_id: null,  // Browser clients don't need unique client ID (each session is separate)
                 host_id: this.hostId,
                 app_id: this.appId,
                 bitrate: this.settings.bitrate,

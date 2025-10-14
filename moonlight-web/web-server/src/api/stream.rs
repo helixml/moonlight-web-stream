@@ -61,6 +61,7 @@ pub async fn start_host(
             credentials,
             session_id,
             mode,
+            client_unique_id,
             host_id,
             app_id,
             bitrate,
@@ -318,6 +319,7 @@ pub async fn start_host(
         use crate::data::StreamSession;
         let stream_session = Arc::new(StreamSession {
             session_id: session_id.clone(),
+            client_unique_id: client_unique_id.clone(),  // Store unique client ID for dashboard display
             streamer: Mutex::new(child),
             ipc_sender: Mutex::new(ipc_sender.clone()),
             websocket: Mutex::new(if mode == SessionMode::Keepalive {
@@ -390,7 +392,7 @@ pub async fn start_host(
                 stream_settings,
                 host_address,
                 host_http_port,
-                host_unique_id: None,
+                host_unique_id: client_unique_id,
                 client_private_key_pem,
                 client_certificate_pem,
                 server_certificate_pem,

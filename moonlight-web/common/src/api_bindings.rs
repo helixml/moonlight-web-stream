@@ -251,6 +251,7 @@ pub enum StreamClientMessage {
         credentials: String,
         session_id: String,    // NEW: session identifier for persistence
         mode: SessionMode,     // NEW: how to handle existing sessions
+        client_unique_id: Option<String>,  // NEW: unique client ID for Moonlight protocol (enables multi-app streaming)
         host_id: u32,
         app_id: u32,
         bitrate: u32,

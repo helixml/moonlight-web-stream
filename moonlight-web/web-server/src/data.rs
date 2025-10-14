@@ -83,6 +83,7 @@ pub struct HostCache {
 /// Persistent streaming session that survives WebSocket disconnects
 pub struct StreamSession {
     pub session_id: String,
+    pub client_unique_id: Option<String>,  // Unique Moonlight client ID (for multi-app streaming)
     pub streamer: Mutex<Child>,
     pub ipc_sender: Mutex<IpcSender<ServerIpcMessage>>,
     pub websocket: Mutex<Option<Session>>,  // None when in keepalive mode

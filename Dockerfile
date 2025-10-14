@@ -4,13 +4,16 @@ FROM rust:latest as builder
 # Install Rust nightly (required by moonlight-web-stream)
 RUN rustup default nightly
 
-# Install build dependencies
+# Install ALL build dependencies upfront (including nodejs/npm)
+# This layer is cached and only rebuilt when dependencies change
 RUN apt-get update && apt-get install -y \
     cmake \
     libssl-dev \
     pkg-config \
     clang \
     libclang-dev \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -27,7 +30,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Build web frontend
 WORKDIR /build/moonlight-web/web-server
-RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.npm \
     npm install
 RUN npm run build

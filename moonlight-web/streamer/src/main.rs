@@ -86,6 +86,9 @@ async fn main() {
     )
     .expect("failed to init logger");
 
+    // VERSION MARKER - increment to verify new build is running
+    info!("[Streamer v4]: Server sends offer to joining browser (no peer reset)");
+
     let default_panic = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         default_panic(info);
@@ -577,7 +580,6 @@ impl StreamConnection {
                 info!("[Keepalive]: Browser client joined keepalive session");
 
                 // Send WebRTC configuration to the new browser client
-                // The browser needs this to create its WebRTC peer
                 let ice_servers: Vec<_> = self.peer.get_configuration().await.ice_servers.iter()
                     .cloned()
                     .map(from_webrtc_ice)
@@ -589,7 +591,23 @@ impl StreamConnection {
                     ))
                     .await;
 
-                info!("[Keepalive]: Sent WebRtcConfig to joining browser client");
+                // If the keepalive peer already has a local offer, send it to the browser
+                // The browser will respond with an answer (instead of sending its own offer)
+                if let Some(local_desc) = self.peer.local_description().await {
+                    info!("[Keepalive]: Sending existing local offer to browser: {:?}", local_desc.sdp_type);
+                    self.ipc_sender.clone()
+                        .send(StreamerIpcMessage::WebSocket(
+                            StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+                                RtcSessionDescription {
+                                    ty: from_webrtc_sdp(local_desc.sdp_type),
+                                    sdp: local_desc.sdp,
+                                },
+                            )),
+                        ))
+                        .await;
+                } else {
+                    info!("[Keepalive]: No local offer yet, browser will initiate");
+                }
 
                 // If Moonlight stream terminated, restart it
                 let stream_active = {

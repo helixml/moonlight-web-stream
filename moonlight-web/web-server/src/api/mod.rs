@@ -430,6 +430,7 @@ async fn get_app_image(
 #[derive(Debug, Serialize)]
 struct SessionInfo {
     session_id: String,
+    client_unique_id: Option<String>,  // Unique Moonlight client ID for this session
     mode: SessionMode,
     has_websocket: bool,
 }
@@ -452,6 +453,7 @@ async fn get_sessions(
 
         sessions.push(SessionInfo {
             session_id: session_id.clone(),
+            client_unique_id: stream_session.client_unique_id.clone(),  // Include unique client ID
             mode: stream_session.mode,
             has_websocket,
         });
