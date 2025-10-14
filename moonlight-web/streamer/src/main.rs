@@ -569,6 +569,51 @@ impl StreamConnection {
         true
     }
 
+    async fn send_offer_with_ice_restart(&self) -> bool {
+        use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
+
+        // ICE restart generates fresh ICE credentials, preventing username conflicts
+        let options = RTCOfferOptions {
+            ice_restart: true,
+            ..Default::default()
+        };
+
+        let local_description = match self.peer.create_offer(Some(options)).await {
+            Err(err) => {
+                warn!("[Signaling]: failed to create offer with ICE restart: {err:?}");
+                return false;
+            }
+            Ok(value) => value,
+        };
+
+        if let Err(err) = self
+            .peer
+            .set_local_description(local_description.clone())
+            .await
+        {
+            warn!("[Signaling]: failed to set local description: {err:?}");
+            return false;
+        }
+
+        info!(
+            "[Signaling] Sending offer with ICE restart (fresh credentials)"
+        );
+
+        self.ipc_sender
+            .clone()
+            .send(StreamerIpcMessage::WebSocket(
+                StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+                    RtcSessionDescription {
+                        ty: from_webrtc_sdp(local_description.sdp_type),
+                        sdp: local_description.sdp,
+                    },
+                )),
+            ))
+            .await;
+
+        true
+    }
+
     async fn on_ipc_message(self: &Arc<Self>, message: ServerIpcMessage) {
         match message {
             ServerIpcMessage::Init { .. } => {}
@@ -591,11 +636,10 @@ impl StreamConnection {
                     ))
                     .await;
 
-                // Create a fresh offer for the new browser connection
-                // Don't reuse cached offer - peer state may be stale (Stable from previous connection)
-                // This triggers fresh ICE negotiation
-                info!("[Keepalive]: Creating fresh offer for browser");
-                if !self.send_offer().await {
+                // Create a fresh offer with ICE restart for the new browser connection
+                // ICE restart generates new credentials, preventing stale ICE username conflicts
+                info!("[Keepalive]: Creating offer with ICE restart for browser");
+                if !self.send_offer_with_ice_restart().await {
                     warn!("[Keepalive]: Failed to create offer for joining browser");
                 }
 
