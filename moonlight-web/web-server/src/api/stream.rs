@@ -127,6 +127,9 @@ pub async fn start_host(
                 return;
             }
 
+            // Clear cache to get fresh app list from Wolf (apps may have been added since last query)
+            host.clear_cache();
+
             let apps = match host.app_list().await {
                 Ok(value) => value,
                 Err(err) => {
