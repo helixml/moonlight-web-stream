@@ -18,13 +18,18 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build the release binary
-RUN cargo build --release
+# Build the release binary with cargo cache
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/build/target \
+    cargo build --release && \
+    cp /build/target/release/web-server /tmp/web-server && \
+    cp /build/target/release/streamer /tmp/streamer
 
 # Build web frontend
 WORKDIR /build/moonlight-web/web-server
 RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
-RUN npm install
+RUN --mount=type=cache,target=/root/.npm \
+    npm install
 RUN npm run build
 
 # Runtime stage - use same Debian version as builder for GLIBC compatibility
@@ -39,9 +44,9 @@ RUN apt-get update && apt-get install -y \
 # Create app directory
 WORKDIR /app
 
-# Copy binaries from builder
-COPY --from=builder /build/target/release/web-server /app/web-server
-COPY --from=builder /build/target/release/streamer /app/streamer
+# Copy binaries from builder (copied to /tmp during build due to cache mount)
+COPY --from=builder /tmp/web-server /app/web-server
+COPY --from=builder /tmp/streamer /app/streamer
 
 # Copy web assets
 COPY --from=builder /build/moonlight-web/web-server/dist /app/static
