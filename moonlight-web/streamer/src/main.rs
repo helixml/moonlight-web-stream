@@ -115,6 +115,7 @@ async fn main() {
         client_certificate_pem,
         server_certificate_pem,
         app_id,
+        keepalive_mode,
     ) = loop {
         match ipc_receiver.recv().await {
             Some(ServerIpcMessage::Init {
@@ -127,6 +128,7 @@ async fn main() {
                 client_certificate_pem,
                 server_certificate_pem,
                 app_id,
+                keepalive_mode,
             }) => {
                 debug!(
                     "Client supported codecs: {:?}",
@@ -146,6 +148,7 @@ async fn main() {
                     client_certificate_pem,
                     server_certificate_pem,
                     app_id,
+                    keepalive_mode,
                 );
             }
             _ => continue,
@@ -247,6 +250,7 @@ async fn main() {
         ipc_receiver,
         &api,
         rtc_config,
+        keepalive_mode,
     )
     .await
     .expect("failed to create connection");
@@ -296,6 +300,8 @@ struct StreamConnection {
     // Stream
     pub stream: RwLock<Option<MoonlightStream>>,
     pub terminate: Notify,
+    // Keepalive mode: WebRTC peer is optional, only Moonlight stream matters
+    pub keepalive_mode: bool,
 }
 
 impl StreamConnection {
@@ -307,6 +313,7 @@ impl StreamConnection {
         mut ipc_receiver: IpcReceiver<ServerIpcMessage>,
         api: &API,
         config: RTCConfiguration,
+        keepalive_mode: bool,
     ) -> Result<Arc<Self>, anyhow::Error> {
         // Send WebRTC Info
         ipc_sender
@@ -341,6 +348,7 @@ impl StreamConnection {
             input,
             stream: Default::default(),
             terminate: Notify::new(),
+            keepalive_mode,
         });
 
         // -- Connection state
@@ -409,6 +417,20 @@ impl StreamConnection {
             })
         });
 
+        // In keepalive mode, start Moonlight stream immediately without waiting for WebRTC
+        // This launches the Wolf container and begins streaming frames (which are thrown away)
+        // When a real client Joins later, WebRTC will be established and frames will go to browser
+        if keepalive_mode {
+            info!("[Keepalive]: Starting Moonlight stream immediately (no WebRTC needed)");
+            let this_clone = this.clone();
+            spawn(async move {
+                if let Err(err) = this_clone.start_stream().await {
+                    warn!("[Keepalive]: failed to start stream: {err:?}");
+                    this_clone.stop().await;
+                }
+            });
+        }
+
         Ok(this)
     }
 
@@ -424,6 +446,13 @@ impl StreamConnection {
         }
     }
     async fn on_peer_connection_state_change(&self, state: RTCPeerConnectionState) {
+        // In keepalive mode, ignore peer disconnection - the Moonlight stream persists
+        // Only stop if a peer was previously connected and then failed
+        if self.keepalive_mode {
+            debug!("[Keepalive]: Ignoring peer state {:?} in keepalive mode", state);
+            return;
+        }
+
         if matches!(
             state,
             RTCPeerConnectionState::Failed

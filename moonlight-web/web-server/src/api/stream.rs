@@ -204,7 +204,15 @@ pub async fn start_host(
                     return;
                 }
             };
+
+            // Debug: Log available apps for troubleshooting
+            info!("[Stream]: Looking for app_id {} in {} available apps", app_id, apps.len());
+            for (idx, app) in apps.iter().enumerate() {
+                info!("[Stream]:   App {}: id={}, title={:?}", idx, app.id, app.title);
+            }
+
             let Some(app) = apps.iter().find(|app| app.id == app_id).cloned() else {
+                warn!("[Stream]: AppNotFound - requested app_id {} not in list of {} apps", app_id, apps.len());
                 let _ = send_ws_message(&mut session, StreamServerMessage::AppNotFound).await;
                 let _ = session.close(None).await;
                 return;
@@ -223,6 +231,12 @@ pub async fn start_host(
                     app,
                 )
             } else {
+                warn!("[Stream]: Missing certificates - private_key={}, client_cert={}, server_cert={}",
+                    host.client_private_key().is_some(),
+                    host.client_certificate().is_some(),
+                    host.server_certificate().is_some());
+                let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+                let _ = session.close(None).await;
                 return;
             }
         };
@@ -371,6 +385,7 @@ pub async fn start_host(
                 client_certificate_pem,
                 server_certificate_pem,
                 app_id,
+                keepalive_mode: mode == SessionMode::Keepalive,
             })
             .await;
 

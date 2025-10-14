@@ -646,7 +646,9 @@ mod stream {
                 uuid: Uuid::new_v4(),
             };
 
-            let rtsp_session_url = if current_game == 0 {
+            // Launch if no game running OR if requesting a different app than what's running
+            // This allows multiple apps to be launched concurrently from the same client
+            let rtsp_session_url = if current_game == 0 || current_game != app_id {
                 let launch_response = host_launch(
                     instance,
                     &mut self.client,
@@ -658,6 +660,7 @@ mod stream {
 
                 launch_response.rtsp_session_url
             } else {
+                // Resume same app that's already running
                 let resume_response = host_resume(
                     instance,
                     &mut self.client,
