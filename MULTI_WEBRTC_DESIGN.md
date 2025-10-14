@@ -334,11 +334,8 @@ Peer 1 Data Channel: Mouse move (100, 200)
       ▼
 InputAggregator::handle_mouse_move(peer_id, 100, 200)
       │
-      ▼
-Update global mouse_pos = (100, 200)
-      │
-      ▼
-MoonlightStream::send_mouse_move(100, 200)
+      ├─▶ Update global mouse_pos = (100, 200)
+      └─▶ IMMEDIATELY: MoonlightStream::send_mouse_move(100, 200)
 
 
 Peer 2 Data Channel: Key down 'A'
@@ -346,18 +343,27 @@ Peer 2 Data Channel: Key down 'A'
       ▼
 InputAggregator::handle_key_down(peer_id, VK_KEY_A)
       │
-      ▼
-pressed_keys.insert(VK_KEY_A)
+      ├─▶ pressed_keys.insert(VK_KEY_A)
+      └─▶ IMMEDIATELY: MoonlightStream::send_key_event(VK_KEY_A, down)
+
+Peer 1 Data Channel: Key up 'A' (but Peer 2 still holding 'A')
       │
       ▼
-MoonlightStream::send_key_event(VK_KEY_A, down)
+InputAggregator::handle_key_up(peer_id, VK_KEY_A)
+      │
+      ├─▶ Check: Are any OTHER peers still holding 'A'?
+      └─▶ If all released: MoonlightStream::send_key_event(VK_KEY_A, up)
+          If others holding: DO NOTHING (key stays pressed)
 ```
 
 **Key Decisions**:
-- Mouse position: Last writer wins (most recent peer)
-- Keyboard: Union of all pressed keys
-- If Peer 1 presses 'A', Peer 2 presses 'B' → Moonlight sees both pressed
-- Key release: Only release when ALL peers released that key
+- **Mouse position**: Send immediately, last writer wins (most recent peer)
+- **Keyboard down**: Send immediately when ANY peer presses
+- **Keyboard up**: Only send when ALL peers have released that key
+  - Track which peers have each key pressed: `HashMap<key, HashSet<peer_id>>`
+  - On key_up: Remove peer from set, if set empty → send key_up to Moonlight
+- **Mouse buttons**: Same as keyboard (union with immediate send)
+- **No batching**: Every input event triggers immediate Moonlight send
 
 ## Implementation Plan
 
