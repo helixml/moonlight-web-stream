@@ -20,6 +20,7 @@ use moonlight_common::{
 };
 use pem::Pem;
 use simplelog::{ColorChoice, TermLogger, TerminalMode};
+use std::collections::HashMap;
 use tokio::{
     io::{stdin, stdout},
     runtime::Handle,
@@ -68,6 +69,7 @@ mod buffer;
 mod connection;
 mod convert;
 mod input;
+mod peer;
 mod sender;
 mod video;
 
@@ -286,9 +288,19 @@ struct StreamConnection {
     pub moonlight: MoonlightInstance,
     pub info: StreamInfo,
     pub settings: StreamSettings,
+
+    // Legacy: Single peer for backward compatibility
     pub peer: Arc<RTCPeerConnection>,
-    pub ipc_sender: IpcSender<StreamerIpcMessage>,
     pub general_channel: Arc<RTCDataChannel>,
+
+    // New: Multi-peer support (Phase 1 preparation)
+    pub peers: RwLock<HashMap<String, Arc<peer::WebRtcPeer>>>,
+    // Note: API is not Clone, we'll reconstruct it for new peers using stored config
+    pub rtc_config: RTCConfiguration,
+
+    // IPC
+    pub ipc_sender: IpcSender<StreamerIpcMessage>,
+
     // Input
     pub input: StreamInput,
     // Video
@@ -322,7 +334,7 @@ impl StreamConnection {
             ))
             .await;
 
-        let peer = Arc::new(api.new_peer_connection(config).await?);
+        let peer = Arc::new(api.new_peer_connection(config.clone()).await?);
 
         // -- Input
         let input = StreamInput::new();
@@ -335,8 +347,10 @@ impl StreamConnection {
             info,
             settings,
             peer: peer.clone(),
-            ipc_sender,
             general_channel,
+            peers: RwLock::new(HashMap::new()),
+            rtc_config: config.clone(),
+            ipc_sender,
             video_size: Mutex::new((0, 0)),
             input,
             stream: Default::default(),
