@@ -104,6 +104,13 @@ pub async fn start_host(
                 *ws_lock = Some(session);
                 drop(ws_lock);
 
+                // Notify streamer that a client joined (important for keepalive→WebRTC transition)
+                let mut ipc_sender = stream_session.ipc_sender.lock().await;
+                ipc_sender.send(ServerIpcMessage::ClientJoined).await;
+                drop(ipc_sender);
+
+                info!("[Stream]: Sent ClientJoined signal to streamer for session {}", session_id);
+
                 // Forward WebSocket messages to existing IPC
                 while let Some(Ok(Message::Text(text))) = stream.recv().await {
                     let Ok(message) = serde_json::from_str::<StreamClientMessage>(&text) else {

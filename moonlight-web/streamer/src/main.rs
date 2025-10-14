@@ -419,9 +419,9 @@ impl StreamConnection {
 
         // In keepalive mode, start Moonlight stream immediately without waiting for WebRTC
         // This launches the Wolf container and begins streaming frames (which are thrown away)
-        // When a real client Joins later, WebRTC will be established and frames will go to browser
+        // When a real client Joins later, the existing peer will be used for WebRTC
         if keepalive_mode {
-            info!("[Keepalive]: Starting Moonlight stream immediately (no WebRTC needed)");
+            info!("[Keepalive]: Starting Moonlight stream immediately (no WebRTC needed yet)");
             let this_clone = this.clone();
             spawn(async move {
                 if let Err(err) = this_clone.start_stream().await {
@@ -543,11 +543,30 @@ impl StreamConnection {
         true
     }
 
-    async fn on_ipc_message(&self, message: ServerIpcMessage) {
+    async fn on_ipc_message(self: &Arc<Self>, message: ServerIpcMessage) {
         match message {
             ServerIpcMessage::Init { .. } => {}
             ServerIpcMessage::WebSocket(message) => {
                 self.on_ws_message(message).await;
+            }
+            ServerIpcMessage::ClientJoined => {
+                // Browser client joined the keepalive session
+                // If Moonlight stream terminated, restart it for the browser
+                info!("[Keepalive]: Browser client joined keepalive session");
+
+                let stream_active = {
+                    let stream_guard = self.stream.read().await;
+                    stream_guard.is_some()
+                };
+
+                if !stream_active {
+                    info!("[Keepalive]: Moonlight stream inactive, restarting for browser client");
+                    if let Err(err) = self.start_stream().await {
+                        warn!("[Keepalive]: Failed to restart stream for browser: {err:?}");
+                    }
+                } else {
+                    info!("[Keepalive]: Moonlight stream already active, WebRTC will attach");
+                }
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;

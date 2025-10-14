@@ -33,6 +33,7 @@ pub enum ServerIpcMessage {
         keepalive_mode: bool,  // If true, bypass WebRTC and connect directly to Moonlight
     },
     WebSocket(StreamClientMessage),
+    ClientJoined,  // Signal that a browser client joined the keepalive session
     Stop,
 }
 
