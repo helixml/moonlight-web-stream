@@ -31,13 +31,29 @@ pub enum ServerIpcMessage {
         server_certificate_pem: String,
         app_id: u32,
     },
+    // Legacy: Single WebSocket connection (backward compatible)
     WebSocket(StreamClientMessage),
+
+    // Multi-peer messages (Phase 4+)
+    StartMoonlight,  // Start Moonlight stream without creating WebRTC peer
+    AddPeer { peer_id: String },  // New WebRTC peer connecting
+    FromPeer { peer_id: String, message: StreamClientMessage },  // Message from specific peer
+    RemovePeer { peer_id: String },  // Peer disconnected
+
     Stop,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum StreamerIpcMessage {
+    // Legacy: Single WebSocket (backward compatible)
     WebSocket(StreamServerMessage),
+
+    // Multi-peer messages (Phase 4+)
+    ToPeer { peer_id: String, message: StreamServerMessage },  // Message for specific peer
+    Broadcast(StreamServerMessage),  // Message for all peers
+    StreamerReady { streamer_id: String },  // Streamer initialized
+    MoonlightConnected,  // Moonlight stream active (no WebRTC yet)
+
     Stop,
 }
 

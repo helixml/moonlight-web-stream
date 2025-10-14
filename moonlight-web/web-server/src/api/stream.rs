@@ -238,6 +238,26 @@ pub async fn start_host(
                             );
                         }
                     }
+                    // Multi-peer messages (Phase 5 - not yet used in legacy endpoint)
+                    StreamerIpcMessage::ToPeer { peer_id, message } => {
+                        warn!("[Ipc]: ToPeer {} ignored in legacy endpoint", peer_id);
+                        // In multi-peer mode, would route to specific peer WebSocket
+                        if let Err(Closed) = send_ws_message(&mut session, message).await {
+                            warn!("[Ipc]: Failed to send ToPeer message");
+                        }
+                    }
+                    StreamerIpcMessage::Broadcast(message) => {
+                        // In multi-peer mode, would broadcast to all peers
+                        if let Err(Closed) = send_ws_message(&mut session, message).await {
+                            warn!("[Ipc]: Failed to broadcast message");
+                        }
+                    }
+                    StreamerIpcMessage::StreamerReady { streamer_id } => {
+                        debug!("[Ipc]: Streamer {} ready (ignored in legacy mode)", streamer_id);
+                    }
+                    StreamerIpcMessage::MoonlightConnected => {
+                        debug!("[Ipc]: Moonlight connected (no action in legacy mode)");
+                    }
                     StreamerIpcMessage::Stop => {
                         debug!("[Ipc]: ipc receiver stopped by streamer");
                         break;

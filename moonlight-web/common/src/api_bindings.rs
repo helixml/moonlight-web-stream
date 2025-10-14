@@ -335,6 +335,54 @@ pub enum StreamServerGeneralMessage {
     ConnectionStatusUpdate { status: ConnectionStatus },
 }
 
+// Streamer API types (Phase 4+)
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct CreateStreamerRequest {
+    pub streamer_id: String,
+    pub client_unique_id: String,
+    pub host_id: u32,
+    pub app_id: u32,
+    pub bitrate: u32,
+    pub packet_size: u32,
+    pub fps: u32,
+    pub width: u32,
+    pub height: u32,
+    pub video_sample_queue_size: u32,
+    pub play_audio_local: bool,
+    pub audio_sample_queue_size: u32,
+    pub video_supported_formats: u32,
+    pub video_colorspace: StreamColorspace,
+    pub video_color_range_full: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, TS, Clone)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct PeerInfo {
+    pub peer_id: String,
+    pub connected_at: String,  // ISO 8601 timestamp
+}
+
+#[derive(Serialize, Deserialize, Debug, TS, Clone)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct StreamerInfo {
+    pub streamer_id: String,
+    pub status: String,  // "active", "starting", "failed"
+    pub moonlight_connected: bool,
+    pub connected_peers: u32,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub created_at: String,  // ISO 8601 timestamp
+    pub peers: Vec<PeerInfo>,
+}
+
+#[derive(Serialize, Deserialize, Debug, TS)]
+#[ts(export, export_to = EXPORT_PATH)]
+pub struct ListStreamersResponse {
+    pub streamers: Vec<StreamerInfo>,
+}
+
 // Virtual-Key Codes
 // https://github.com/awakecoding/Win32Keyboard/blob/master/vkcodes.h
 ts_consts!(

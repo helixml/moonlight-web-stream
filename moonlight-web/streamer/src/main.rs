@@ -549,6 +549,25 @@ impl StreamConnection {
             ServerIpcMessage::WebSocket(message) => {
                 self.on_ws_message(message).await;
             }
+            // Multi-peer messages (Phase 5 - not yet fully implemented)
+            ServerIpcMessage::StartMoonlight => {
+                // TODO Phase 5: Start Moonlight without WebRTC
+                warn!("[IPC]: StartMoonlight not yet implemented");
+            }
+            ServerIpcMessage::AddPeer { peer_id } => {
+                // TODO Phase 5: Create new RTCPeerConnection for this peer
+                warn!("[IPC]: AddPeer {} not yet implemented", peer_id);
+            }
+            ServerIpcMessage::FromPeer { peer_id, message } => {
+                // TODO Phase 5: Route message to correct peer
+                warn!("[IPC]: FromPeer {} not yet implemented", peer_id);
+                // For now, treat like legacy WebSocket message
+                self.on_ws_message(message).await;
+            }
+            ServerIpcMessage::RemovePeer { peer_id } => {
+                // TODO Phase 5: Remove peer, unsubscribe from broadcasters
+                warn!("[IPC]: RemovePeer {} not yet implemented", peer_id);
+            }
             ServerIpcMessage::Stop => {
                 self.stop().await;
             }
