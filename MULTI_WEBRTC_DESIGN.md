@@ -205,7 +205,7 @@ impl InputAggregator {
 **Request**: `POST /api/streamers`
 ```json
 {
-  "streamer_id": "agent-ses_01k7...",  // Unique streamer ID
+  "streamer_id": "agent-ses_01k7...",  // Unique streamer ID (client chooses)
   "client_unique_id": "helix-agent-ses_01k7...",  // Moonlight client ID
   "host_id": 0,
   "app_id": 304391717,
@@ -214,7 +214,13 @@ impl InputAggregator {
     "height": 1600,
     "fps": 60,
     "bitrate": 5000,
-    ...
+    "packet_size": 1024,
+    "video_sample_queue_size": 10,
+    "audio_sample_queue_size": 10,
+    "play_audio_local": false,
+    "video_supported_formats": 1,  // H264
+    "video_colorspace": "Rec709",
+    "video_color_range_full": false
   }
 }
 ```
@@ -225,44 +231,20 @@ impl InputAggregator {
   "streamer_id": "agent-ses_01k7...",
   "status": "active",
   "moonlight_connected": true,
-  "connected_peers": 0
+  "connected_peers": 0,
+  "width": 2560,
+  "height": 1600,
+  "fps": 60
 }
 ```
 
 **Behavior**:
 - Spawns streamer process
-- Starts Moonlight stream immediately
+- Starts Moonlight stream immediately with specified settings
 - Does NOT create any WebRTC peers
 - Returns success when Moonlight stream active
 
-### New WebSocket: Connect WebRTC Peer to Existing Streamer
-
-**URL**: `ws://moonlight-web:8080/api/streamers/{streamer_id}/peer`
-
-**Messages**:
-```typescript
-// Client → Server
-type WebRtcClientMessage =
-  | { type: "authenticate", credentials: string }
-  | { type: "signaling", data: SignalingMessage }
-
-// Server → Client
-type WebRtcServerMessage =
-  | { type: "authenticated", peer_id: string }
-  | { type: "signaling", data: SignalingMessage }
-  | { type: "connectionComplete", capabilities, width, height }
-  | { type: "error", message: string }
-```
-
-**Behavior**:
-- Authenticates client
-- Generates unique peer_id
-- Creates new RTCPeerConnection
-- Adds peer to streamer's peer list
-- Handles WebRTC signaling independently
-- On disconnect: Removes peer, keeps streamer running
-
-### Modified Endpoint: List Streamers
+### New Endpoint: List Streamers
 
 **Request**: `GET /api/streamers`
 
@@ -275,23 +257,86 @@ type WebRtcServerMessage =
       "status": "active",
       "moonlight_connected": true,
       "connected_peers": 2,
+      "width": 2560,
+      "height": 1600,
+      "fps": 60,
       "peers": [
-        {"peer_id": "browser-1234", "connected_at": "..."},
-        {"peer_id": "browser-5678", "connected_at": "..."}
+        {"peer_id": "peer-1234", "connected_at": "2025-10-14T19:00:00Z"},
+        {"peer_id": "peer-5678", "connected_at": "2025-10-14T19:05:00Z"}
       ]
     }
   ]
 }
 ```
 
-### Modified Endpoint: Stop Streamer
+### New Endpoint: Stop Streamer
 
 **Request**: `DELETE /api/streamers/{streamer_id}`
 
+**Response**: `204 No Content`
+
 **Behavior**:
-- Disconnects all WebRTC peers gracefully
+- Disconnects all WebRTC peers gracefully (sends PeerDisconnect to each)
 - Stops Moonlight stream
 - Terminates streamer process
+- Returns 404 if streamer_id not found
+
+### New Endpoint: Get Streamer Details
+
+**Request**: `GET /api/streamers/{streamer_id}`
+
+**Response**:
+```json
+{
+  "streamer_id": "agent-ses_01k7...",
+  "status": "active",
+  "moonlight_connected": true,
+  "connected_peers": 2,
+  "width": 2560,
+  "height": 1600,
+  "fps": 60,
+  "created_at": "2025-10-14T18:00:00Z",
+  "peers": [
+    {"peer_id": "peer-1234", "connected_at": "2025-10-14T19:00:00Z"},
+    {"peer_id": "peer-5678", "connected_at": "2025-10-14T19:05:00Z"}
+  ]
+}
+```
+
+### New WebSocket: Connect WebRTC Peer to Existing Streamer
+
+**URL**: `ws://moonlight-web:8080/api/streamers/{streamer_id}/peer`
+
+**Messages**: **IDENTICAL to current /host/stream WebSocket!**
+
+```typescript
+// Client → Server (SAME as current protocol)
+type StreamClientMessage =
+  | { AuthenticateAndInit: { credentials, client_unique_id, host_id, app_id, ... } }
+  | { Signaling: SignalingMessage }
+
+// Server → Client (SAME as current protocol)
+type StreamServerMessage =
+  | { WebRtcConfig: { ice_servers } }
+  | { Signaling: SignalingMessage }
+  | { ConnectionComplete: { capabilities, width, height } }
+  | { PeerDisconnect }
+  | ...
+```
+
+**Behavior**:
+- Uses EXISTING StreamClientMessage/StreamServerMessage types (no protocol changes!)
+- On `AuthenticateAndInit`:
+  - Validates credentials
+  - **IGNORES**: width, height, fps, bitrate, video_sample_queue_size, etc. (streamer already configured)
+  - **USES**: credentials for auth
+  - Generates unique peer_id
+  - Creates new RTCPeerConnection
+  - Adds peer to streamer's peer list
+- Then handles WebRTC signaling normally
+- On disconnect: Removes peer, keeps streamer running
+
+**Key Insight**: WebSocket protocol is **100% backward compatible**! Frontend just connects to different URL, sends same messages, streamer ignores irrelevant settings.
 
 ## Data Flow
 
