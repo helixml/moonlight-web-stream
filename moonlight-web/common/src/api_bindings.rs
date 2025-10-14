@@ -240,6 +240,7 @@ pub enum StreamSignalingMessage {
 pub enum StreamClientMessage {
     AuthenticateAndInit {
         credentials: String,
+        client_unique_id: Option<String>,  // Unique Moonlight client ID (for multi-app streaming)
         host_id: u32,
         app_id: u32,
         bitrate: u32,

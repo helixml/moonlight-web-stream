@@ -59,6 +59,7 @@ pub async fn start_host(
 
         let StreamClientMessage::AuthenticateAndInit {
             credentials,
+            client_unique_id,
             host_id,
             app_id,
             bitrate,
@@ -253,7 +254,7 @@ pub async fn start_host(
                 stream_settings,
                 host_address,
                 host_http_port,
-                host_unique_id: None,
+                host_unique_id: client_unique_id,
                 client_private_key_pem,
                 client_certificate_pem,
                 server_certificate_pem,

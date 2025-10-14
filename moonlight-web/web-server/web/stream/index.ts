@@ -79,6 +79,7 @@ export class Stream {
         this.sendWsMessage({
             AuthenticateAndInit: {
                 credentials: this.api.credentials,
+                client_unique_id: null,  // Browser clients use default (each creates new stream)
                 host_id: this.hostId,
                 app_id: this.appId,
                 bitrate: this.settings.bitrate,
