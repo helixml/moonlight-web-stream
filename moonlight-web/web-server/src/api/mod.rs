@@ -26,8 +26,9 @@ use crate::{
 use common::api_bindings::{
     DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery,
     GetHostResponse, GetHostsResponse, PostPairRequest, PostPairResponse1, PostPairResponse2,
-    PostWakeUpRequest, PutHostRequest, PutHostResponse, UndetailedHost,
+    PostWakeUpRequest, PutHostRequest, PutHostResponse, UndetailedHost, SessionMode,
 };
+use serde::Serialize;
 
 mod auth;
 mod stream;
@@ -425,6 +426,40 @@ async fn get_app_image(
     }
 }
 
+/// Session info for external monitoring (Agent Sandboxes dashboard)
+#[derive(Debug, Serialize)]
+struct SessionInfo {
+    session_id: String,
+    mode: SessionMode,
+    has_websocket: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GetSessionsResponse {
+    sessions: Vec<SessionInfo>,
+}
+
+#[get("/sessions")]
+async fn get_sessions(
+    data: Data<RuntimeApiData>,
+) -> Either<Json<GetSessionsResponse>, HttpResponse> {
+    let sessions_lock = data.sessions.read().await;
+
+    let mut sessions = Vec::new();
+    for (session_id, stream_session) in sessions_lock.iter() {
+        let ws_lock = stream_session.websocket.lock().await;
+        let has_websocket = ws_lock.is_some();
+
+        sessions.push(SessionInfo {
+            session_id: session_id.clone(),
+            mode: stream_session.mode,
+            has_websocket,
+        });
+    }
+
+    Either::Left(Json(GetSessionsResponse { sessions }))
+}
+
 pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl HttpServiceFactory {
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))
@@ -442,6 +477,7 @@ pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl Http
             pair_host,
             get_apps,
             get_app_image,
+            get_sessions,
         ])
 }
 

@@ -359,8 +359,6 @@ pub async fn start_host(
             }
         });
 
-        let mut ipc_sender_clone = ipc_sender.clone();
-
         // Send init into ipc
         ipc_sender
             .send(ServerIpcMessage::Init {
