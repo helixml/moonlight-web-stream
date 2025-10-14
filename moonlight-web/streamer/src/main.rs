@@ -65,6 +65,7 @@ use crate::{
 };
 
 mod audio;
+mod broadcaster;
 mod buffer;
 mod connection;
 mod convert;
@@ -298,6 +299,10 @@ struct StreamConnection {
     // Note: API is not Clone, we'll reconstruct it for new peers using stored config
     pub rtc_config: RTCConfiguration,
 
+    // Media broadcasting (Phase 2)
+    pub video_broadcaster: Arc<broadcaster::VideoBroadcaster>,
+    pub audio_broadcaster: Arc<broadcaster::AudioBroadcaster>,
+
     // IPC
     pub ipc_sender: IpcSender<StreamerIpcMessage>,
 
@@ -350,6 +355,8 @@ impl StreamConnection {
             general_channel,
             peers: RwLock::new(HashMap::new()),
             rtc_config: config.clone(),
+            video_broadcaster: broadcaster::VideoBroadcaster::new(),
+            audio_broadcaster: broadcaster::AudioBroadcaster::new(),
             ipc_sender,
             video_size: Mutex::new((0, 0)),
             input,
