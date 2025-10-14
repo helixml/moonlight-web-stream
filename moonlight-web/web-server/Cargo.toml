@@ -27,6 +27,8 @@ pem = { workspace = true }
 slab = { workspace = true }
 async-stream = { workspace = true }
 futures = { workspace = true }
+uuid = { version = "1.0", features = ["v4"] }
+chrono = "0.4"
 
 [lints]
 workspace = true
