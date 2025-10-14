@@ -59,10 +59,14 @@ Lifecycle:
 **State**:
 ```rust
 struct Streamer {
+    streamer_id: String,
+
     // Moonlight connection (1:1 with streamer)
     moonlight_host: Mutex<ReqwestMoonlightHost>,
-    moonlight_stream: RwLock<Option<MoonlightStream>>,
+    moonlight_stream: Arc<RwLock<Option<MoonlightStream>>>,
+    moonlight: MoonlightInstance,
     app_id: u32,
+    settings: StreamSettings,
 
     // WebRTC multiplexing (1:N)
     peers: RwLock<HashMap<String, Arc<WebRtcPeer>>>,  // peer_id -> peer
@@ -76,17 +80,48 @@ struct Streamer {
     // Input aggregation
     input_aggregator: Arc<InputAggregator>,  // Combines inputs from all peers
 
+    // IPC communication
+    ipc_sender: IpcSender<StreamerIpcMessage>,
+
     // Control
     terminate: Notify,
+}
+
+impl Streamer {
+    async fn start_moonlight_stream(&self) -> Result<()> {
+        // Called during streamer initialization
+        // Starts Moonlight RTSP/RTP connection to Wolf
+        // Does NOT create any WebRTC peers
+    }
+
+    async fn add_peer(&self, peer_id: String) -> Result<()> {
+        // Create new RTCPeerConnection
+        // Subscribe to video/audio broadcasters
+        // Add to peers map
+        // Send WebRtcConfig to peer
+    }
+
+    async fn remove_peer(&self, peer_id: &str) {
+        // Remove from peers map
+        // Unsubscribe from broadcasters
+        // Clean up input aggregator state
+        // Close peer connection
+    }
+
+    async fn handle_peer_message(&self, peer_id: &str, message: StreamClientMessage) {
+        // Route signaling messages to correct peer
+        // Handle input events via input aggregator
+    }
 }
 ```
 
 **Responsibilities**:
-- Start/stop Moonlight stream
+- Start/stop Moonlight stream (independent of peers)
 - Add/remove WebRTC peers dynamically
 - Broadcast video/audio frames to all connected peers
-- Aggregate input from all peers → send to Moonlight
+- Aggregate input from all peers → send to Moonlight immediately
 - Handle Moonlight stream lifecycle independently
+- Route IPC messages to/from correct peers
 
 ### 2. WebRTC Peer (Short-lived, Multiple)
 
@@ -161,14 +196,16 @@ impl VideoBroadcaster {
 **Architecture**:
 ```rust
 struct InputAggregator {
+    moonlight_stream: Arc<RwLock<Option<MoonlightStream>>>,
+
     // Mouse position: Use most recent from any peer
     mouse_pos: RwLock<(i32, i32)>,
 
-    // Keyboard: Union of all pressed keys
-    pressed_keys: RwLock<HashSet<u16>>,
+    // Keyboard: Track which peers have each key pressed
+    key_states: RwLock<HashMap<u16, HashSet<String>>>,  // key -> set of peer_ids
 
-    // Mouse buttons: Union of all pressed buttons
-    pressed_buttons: RwLock<HashSet<MouseButton>>,
+    // Mouse buttons: Track which peers have each button pressed
+    button_states: RwLock<HashMap<MouseButton, HashSet<String>>>,  // button -> set of peer_ids
 
     // Gamepads: Each peer can have separate gamepad
     gamepads: RwLock<HashMap<String, GamepadState>>,  // peer_id -> gamepad
@@ -178,25 +215,89 @@ impl InputAggregator {
     async fn handle_mouse_move(&self, peer_id: &str, x: i32, y: i32) {
         // Update global mouse position (last writer wins)
         *self.mouse_pos.write().await = (x, y);
-        // Send to Moonlight
+        // Send to Moonlight IMMEDIATELY
+        if let Some(stream) = self.moonlight_stream.read().await.as_ref() {
+            stream.send_mouse_move(x, y).await;
+        }
     }
 
     async fn handle_key_down(&self, peer_id: &str, key: u16) {
-        self.pressed_keys.write().await.insert(key);
-        // Send to Moonlight
+        let mut states = self.key_states.write().await;
+        let peers_holding = states.entry(key).or_insert_with(HashSet::new);
+        let is_first = peers_holding.is_empty();
+        peers_holding.insert(peer_id.to_string());
+
+        // Only send key_down to Moonlight if this is FIRST peer pressing this key
+        if is_first {
+            if let Some(stream) = self.moonlight_stream.read().await.as_ref() {
+                stream.send_key_event(key, true).await;
+            }
+        }
     }
 
     async fn handle_key_up(&self, peer_id: &str, key: u16) {
-        self.pressed_keys.write().await.remove(&key);
-        // Send to Moonlight
+        let mut states = self.key_states.write().await;
+        if let Some(peers_holding) = states.get_mut(&key) {
+            peers_holding.remove(peer_id);
+
+            // Only send key_up to Moonlight if NO peers are holding this key anymore
+            if peers_holding.is_empty() {
+                states.remove(&key);
+                if let Some(stream) = self.moonlight_stream.read().await.as_ref() {
+                    stream.send_key_event(key, false).await;
+                }
+            }
+        }
+    }
+
+    // Called when peer disconnects - release all inputs from that peer
+    async fn remove_peer(&self, peer_id: &str) {
+        // Release all keys this peer was holding
+        let mut key_states = self.key_states.write().await;
+        let mut keys_to_release = Vec::new();
+
+        for (key, peers) in key_states.iter_mut() {
+            if peers.remove(peer_id) && peers.is_empty() {
+                keys_to_release.push(*key);
+            }
+        }
+
+        // Send key_up for all keys that are now fully released
+        if let Some(stream) = self.moonlight_stream.read().await.as_ref() {
+            for key in keys_to_release {
+                key_states.remove(&key);
+                stream.send_key_event(key, false).await;
+            }
+        }
+
+        // Same for mouse buttons
+        let mut button_states = self.button_states.write().await;
+        let mut buttons_to_release = Vec::new();
+
+        for (button, peers) in button_states.iter_mut() {
+            if peers.remove(peer_id) && peers.is_empty() {
+                buttons_to_release.push(*button);
+            }
+        }
+
+        if let Some(stream) = self.moonlight_stream.read().await.as_ref() {
+            for button in buttons_to_release {
+                button_states.remove(&button);
+                stream.send_mouse_button(button, false).await;
+            }
+        }
+
+        // Remove gamepad for this peer
+        self.gamepads.write().await.remove(peer_id);
     }
 }
 ```
 
 **Key Properties**:
-- Union semantics: If ANY peer has key pressed, send to Moonlight
+- Union semantics: Key sent down when FIRST peer presses, up when LAST peer releases
 - Mouse: Most recent movement wins
 - Gamepads: Independent per peer (don't conflict)
+- Cleanup: Peer disconnect releases all its inputs
 
 ## API Changes
 
@@ -337,6 +438,69 @@ type StreamServerMessage =
 - On disconnect: Removes peer, keeps streamer running
 
 **Key Insight**: WebSocket protocol is **100% backward compatible**! Frontend just connects to different URL, sends same messages, streamer ignores irrelevant settings.
+
+## Startup Flow Sequences
+
+### Create Streamer (Headless)
+
+```
+1. Helix calls: POST /api/streamers { streamer_id, client_unique_id, app_id, settings }
+2. Web-server spawns streamer process (stdin/stdout IPC)
+3. Web-server sends: Init { host_config, app_id, client_unique_id, settings }
+4. Streamer receives Init → creates MoonlightHost, configures WebRTC API
+5. Web-server sends: StartMoonlight
+6. Streamer starts Moonlight stream (RTSP handshake, starts Wolf container)
+7. Streamer sends: MoonlightConnected
+8. Web-server returns 200 OK to Helix
+9. Streamer runs in background, no WebRTC peers yet (headless)
+```
+
+### Browser Joins Existing Streamer
+
+```
+1. Browser opens: WS /api/streamers/{streamer_id}/peer
+2. Web-server generates unique peer_id: "peer-{timestamp}-{random}"
+3. Web-server stores: peer_websockets.insert(peer_id, websocket_session)
+4. Browser sends: AuthenticateAndInit { credentials, ... }
+5. Web-server validates credentials
+6. Web-server sends to streamer via IPC: AddPeer { peer_id: "peer-abc123" }
+7. Streamer creates RTCPeerConnection for this peer
+8. Streamer subscribes peer to video/audio broadcasters
+9. Streamer sends via IPC: ToPeer { peer_id, WebRtcConfig { ice_servers } }
+10. Web-server routes to peer's WebSocket → Browser
+11. Browser receives WebRtcConfig, creates RTCPeerConnection
+12. Streamer sends via IPC: ToPeer { peer_id, Signaling(Offer) }
+13. Web-server routes to WebSocket → Browser receives offer
+14. Browser creates answer, sends: Signaling(Answer)
+15. Web-server forwards via IPC: FromPeer { peer_id, Signaling(Answer) }
+16. Streamer sets remote description on that peer's RTCPeerConnection
+17. ICE candidates exchanged (same FromPeer/ToPeer routing via WebSocket)
+18. ICE connects → **DIRECT WebRTC connection established** (browser ↔ streamer process)
+19. Media flows: Streamer → Browser (P2P or via TURN, NOT through web-server!)
+20. Streamer sends via IPC: ToPeer { peer_id, ConnectionComplete }
+21. Web-server routes to WebSocket → Browser shows stream, enables controls
+```
+
+**Critical Architecture Point**:
+- **Signaling** (offer/answer/ICE): Goes through WebSocket → web-server → IPC → streamer
+- **Media** (video/audio RTP): Direct P2P connection between browser and streamer process
+- Web-server is ONLY a signaling router, not a media proxy
+- This is standard WebRTC architecture - signaling separate from media transport
+
+### Browser Disconnects
+
+```
+1. Browser closes WebSocket (or network failure)
+2. Web-server detects close
+3. Web-server sends to streamer: RemovePeer { peer_id }
+4. Streamer calls peer.remove_peer(peer_id):
+   - Unsubscribes from video/audio broadcasters
+   - Calls input_aggregator.remove_peer(peer_id) (releases keys/buttons)
+   - Removes from peers map
+   - Closes RTCPeerConnection
+5. Other peers completely unaffected
+6. Moonlight stream continues (headless mode)
+```
 
 ## Data Flow
 
@@ -559,23 +723,129 @@ let peer_id = format!("peer-{}-{}", timestamp, random);
 
 Must be unique across all peers in streamer.
 
+### IPC Communication Architecture
+
+**Problem**: Streamer uses stdin/stdout IPC but needs to communicate with N WebSockets
+
+**Solution**: Web-server acts as message router
+
+```rust
+// In web-server (RuntimeApiData)
+struct StreamerState {
+    process: Child,
+    ipc_sender: IpcSender<ServerIpcMessage>,
+    ipc_receiver: IpcReceiver<StreamerIpcMessage>,
+    peer_websockets: Arc<RwLock<HashMap<String, Session>>>,  // peer_id -> WebSocket
+}
+
+// Message routing
+streamer_ipc_receiver loop:
+    message = recv()
+    match message {
+        StreamerIpcMessage::ToPeer { peer_id, message } => {
+            // Route to specific peer's WebSocket
+            websockets.get(peer_id).send(message)
+        }
+        StreamerIpcMessage::Broadcast(message) => {
+            // Send to ALL peer WebSockets
+            for ws in websockets.values() {
+                ws.send(message)
+            }
+        }
+    }
+
+// From WebSocket to streamer
+peer_websocket loop:
+    message = recv()
+    streamer.ipc_sender.send(ServerIpcMessage::FromPeer { peer_id, message })
+```
+
+**IPC Message Updates**:
+```rust
+enum ServerIpcMessage {
+    Init { ... },  // Initial streamer setup
+    StartMoonlight,  // Start Moonlight stream (no WebRTC)
+    AddPeer { peer_id: String },  // New WebRTC peer joined
+    FromPeer { peer_id: String, message: StreamClientMessage },  // Peer message
+    RemovePeer { peer_id: String },  // Peer disconnected
+    Stop,
+}
+
+enum StreamerIpcMessage {
+    ToPeer { peer_id: String, message: StreamServerMessage },  // Message for specific peer
+    Broadcast(StreamServerMessage),  // Message for all peers
+    StreamerReady { streamer_id: String },  // Streamer initialized
+    MoonlightConnected,  // Moonlight stream active
+    Stop,
+}
+```
+
+### Broadcaster Cleanup
+
+```rust
+struct VideoBroadcaster {
+    subscribers: RwLock<HashMap<String, mpsc::UnboundedSender<VideoFrame>>>,  // peer_id -> channel
+}
+
+impl VideoBroadcaster {
+    async fn subscribe(&self, peer_id: String) -> mpsc::UnboundedReceiver<VideoFrame> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.subscribers.write().await.insert(peer_id, tx);
+        rx
+    }
+
+    async fn unsubscribe(&self, peer_id: &str) {
+        self.subscribers.write().await.remove(peer_id);
+    }
+
+    async fn broadcast(&self, frame: VideoFrame) {
+        let subs = self.subscribers.read().await;
+        for (peer_id, tx) in subs.iter() {
+            if let Err(_) = tx.try_send(frame.clone()) {
+                warn!("Peer {peer_id} channel full, dropping frame");
+            }
+        }
+    }
+}
+```
+
 ### Error Handling
 
 **Moonlight stream fails**:
-- Stop all WebRTC peers gracefully
-- Terminate streamer process
-- Client reconnect creates new streamer
+- Streamer detects stream termination
+- Sends `Broadcast(PeerDisconnect)` to all WebRTC peers
+- Web-server closes all peer WebSockets
+- Terminates streamer process
+- Removes from streamers map
+- Clients get error, can create new streamer
 
-**WebRTC peer fails**:
-- Remove from peers list
-- Unsubscribe from broadcasters
-- Clean up input state for that peer
-- Other peers unaffected
+**WebRTC peer fails** (connection timeout, network error):
+- Web-server detects WebSocket close
+- Sends `RemovePeer { peer_id }` to streamer
+- Streamer removes from peers map
+- Unsubscribes from video/audio broadcasters
+- Calls `input_aggregator.remove_peer(peer_id)` to release inputs
+- Other peers completely unaffected
 
 **Last peer disconnects**:
 - Moonlight stream continues (headless mode)
 - Streamer process continues running
 - Ready for new peers to join
+- This is DESIRED behavior for external agents
+
+**Streamer process crashes**:
+- Web-server detects process exit
+- Closes all peer WebSockets
+- Removes from streamers map
+- Clients get disconnected
+- Can create new streamer to recover
+
+**Web-server restarts**:
+- All streamer processes are child processes
+- Child processes automatically terminated on parent exit
+- Streamers map cleared (in-memory only)
+- Clients must recreate streamers
+- Clean slate on restart
 
 ## Migration Strategy
 
