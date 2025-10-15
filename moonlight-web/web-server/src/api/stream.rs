@@ -441,10 +441,21 @@ pub async fn start_host(
                 info!("[Stream]: Cleaning up {}session {}",
                     if is_kickoff_session { "kickoff " } else { "" },
                     session_clone.session_id);
+
+                // CRITICAL: Send Stop message to streamer FIRST so it can call stop() and send cancel
+                {
+                    let mut ipc_sender = session_clone.ipc_sender.lock().await;
+                    ipc_sender.send(ServerIpcMessage::Stop).await;
+                    info!("[Stream]: Sent Stop IPC to streamer for clean cancel");
+                }
+
+                // Give streamer a moment to send cancel before killing
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
                 let mut sessions = data_clone.sessions.write().await;
                 sessions.remove(&session_clone.session_id);
 
-                // Kill streamer
+                // Kill streamer (after it had chance to cancel)
                 use tokio::process::Child;
                 let mut streamer: tokio::sync::MutexGuard<Child> = session_clone.streamer.lock().await;
                 if let Err(err) = streamer.kill().await {
