@@ -318,6 +318,8 @@ pub async fn create_streamer(
         // When handler returns, child would be dropped and process killed (kill_on_drop=true)
         let _child = child;
 
+        info!("🔄 [Streamer {}] Child process ownership transferred to IPC task, process will stay alive", streamer_id);
+
         while let Some(message) = ipc_receiver.recv().await {
             info!("🔄 [Streamer {}] Received IPC message: {:?}", streamer_id, message);
             match message {
@@ -370,10 +372,16 @@ pub async fn create_streamer(
             }
         }
 
-        info!("🛑 [Streamer {}] IPC receiver task ended, cleaning up", streamer_id);
+        warn!("🛑 [Streamer {}] IPC receiver loop ENDED - ipc_receiver.recv() returned None!", streamer_id);
+        warn!("🛑 [Streamer {}] This means child's stdout closed (process exited, crashed, or stopped writing)", streamer_id);
+        warn!("🛑 [Streamer {}] Streamer process may still be running but IPC is broken", streamer_id);
+
         // Clean up when streamer stops
+        let streamer_count_before = registry_clone.streamers.read().await.len();
         registry_clone.streamers.write().await.remove(&streamer_id);
-        info!("🛑 [Streamer {}] Removed from registry", streamer_id);
+        let streamer_count_after = registry_clone.streamers.read().await.len();
+
+        info!("🛑 [Streamer {}] Removed from registry (count: {} -> {})", streamer_id, streamer_count_before, streamer_count_after);
     });
 
     // NOW send Init and StartMoonlight messages (after receiver is listening)
