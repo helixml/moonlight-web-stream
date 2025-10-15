@@ -500,10 +500,18 @@ pub async fn start_host(
             let mut ws_lock = stream_session.websocket.lock().await;
             *ws_lock = None;
         } else {
-            // Keepalive mode: close WebSocket immediately (no WebRTC needed)
-            // Streamer's peer disconnect handler will call stop() which sends cancel
-            info!("[Stream]: Keepalive mode - closing WebSocket");
+            // Keepalive mode: WebSocket closes immediately after opening
+            info!("[Stream]: Keepalive mode WebSocket closing - sending Stop for clean cancel");
+
+            // Send Stop to trigger streamer's stop() → cancel() flow
+            let mut ipc_sender = stream_session.ipc_sender.lock().await;
+            ipc_sender.send(ServerIpcMessage::Stop).await;
+            drop(ipc_sender);
+
             let _ = session.close(None).await;
+
+            // Streamer will call stop() → cancel() → exit cleanly
+            info!("[Stream]: Stop sent to keepalive streamer, waiting for clean shutdown");
         }
     });
 
