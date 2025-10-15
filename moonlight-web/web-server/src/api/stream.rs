@@ -237,27 +237,52 @@ pub async fn start_host(
             }
         };
 
-        // CRITICAL: Generate UNIQUE pairing credentials for this session
-        // Wolf identifies clients by certificate hash - shared certs = same client_id = session conflicts
-        info!("[Stream]: Generating unique pairing credentials for session {}", session_id);
+        // KICKOFF APPROACH: Reuse certificates per client_unique_id for auto-RESUME
+        // Same client_unique_id → same certificate → same Wolf client_id → RESUME works!
         use moonlight_common::pair::generate_new_client;
         use moonlight_common::PairPin;
         use moonlight_common::network::reqwest::ReqwestMoonlightHost;
 
-        let client_auth = match generate_new_client() {
-            Ok(auth) => auth,
-            Err(err) => {
-                warn!("[Stream]: Failed to generate client credentials: {:?}", err);
-                let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
-                let _ = session.close(None).await;
-                return;
+        let client_auth = if let Some(ref unique_id) = client_unique_id {
+            // Check cache first
+            let cache = data.client_certificates.read().await;
+            if let Some(cached_auth) = cache.get(unique_id) {
+                info!("[Stream]: Reusing cached certificate for client_unique_id '{}' (enables RESUME)", unique_id);
+                cached_auth.clone()
+            } else {
+                drop(cache);
+                // Generate new credentials and cache them
+                let auth = match generate_new_client() {
+                    Ok(auth) => auth,
+                    Err(err) => {
+                        warn!("[Stream]: Failed to generate client credentials: {:?}", err);
+                        let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+                        let _ = session.close(None).await;
+                        return;
+                    }
+                };
+
+                // Cache for future sessions with same client_unique_id
+                let mut cache = data.client_certificates.write().await;
+                cache.insert(unique_id.clone(), auth.clone());
+                info!("[Stream]: Generated and cached new certificate for client_unique_id '{}'", unique_id);
+                auth
+            }
+        } else {
+            // No client_unique_id - generate fresh credentials (normal browser behavior)
+            match generate_new_client() {
+                Ok(auth) => auth,
+                Err(err) => {
+                    warn!("[Stream]: Failed to generate client credentials: {:?}", err);
+                    let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+                    let _ = session.close(None).await;
+                    return;
+                }
             }
         };
 
         let client_private_key_pem = client_auth.private_key.to_string();
         let client_certificate_pem = client_auth.certificate.to_string();
-
-        info!("[Stream]: Generated unique client credentials, now auto-pairing...");
 
         // Auto-pair using internal PIN
         let pin = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN")

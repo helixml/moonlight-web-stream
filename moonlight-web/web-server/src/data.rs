@@ -95,6 +95,7 @@ pub struct RuntimeApiData {
     pub(crate) file_writer: Sender<()>,
     pub(crate) hosts: RwLock<Slab<Mutex<RuntimeApiHost>>>,
     pub(crate) sessions: RwLock<HashMap<String, Arc<StreamSession>>>,  // NEW: persistent sessions
+    pub(crate) client_certificates: RwLock<HashMap<String, ClientAuth>>,  // KICKOFF: Cache certificates by client_unique_id
 }
 
 impl RuntimeApiData {
@@ -140,6 +141,7 @@ impl RuntimeApiData {
             file_writer,
             hosts: RwLock::new(hosts),
             sessions: RwLock::new(HashMap::new()),  // NEW: initialize empty sessions map
+            client_certificates: RwLock::new(HashMap::new()),  // KICKOFF: initialize empty certificate cache
         });
 
         spawn({
