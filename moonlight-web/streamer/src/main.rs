@@ -191,10 +191,10 @@ async fn main() {
     eprintln!("🎬 [Streamer] StageStarting sent");
 
     // -- Create the host and pair it
-    eprintln!("🎬 [Streamer] Creating ReqwestMoonlightHost with address={}, port={}", host_address, host_http_port);
-    let mut host = ReqwestMoonlightHost::new(host_address.clone(), host_http_port, host_unique_id)
+    eprintln!("🎬 [Streamer] Creating ReqwestMoonlightHost with address={}, port={}, unique_id={:?}", host_address, host_http_port, host_unique_id);
+    let mut host = ReqwestMoonlightHost::new(host_address.clone(), host_http_port, host_unique_id.clone())
         .expect(&format!("failed to create host at {}:{}", host_address, host_http_port));
-    eprintln!("🎬 [Streamer] ReqwestMoonlightHost created");
+    eprintln!("🎬 [Streamer] ReqwestMoonlightHost created with unique_id={:?}", host_unique_id);
 
     eprintln!("🎬 [Streamer] Setting pairing info...");
     host.set_pairing_info(

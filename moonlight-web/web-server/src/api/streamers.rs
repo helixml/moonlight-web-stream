@@ -77,9 +77,9 @@ pub async fn create_streamer(
         info!("🚀 [Streamers API] Streamer {} not in registry, proceeding to create", req.streamer_id);
     }
 
-    // Get host info
+    // Get host info and generate UNIQUE client credentials per streamer
     info!("🚀 [Streamers API] Looking up host_id={}", req.host_id);
-    let (host_address, host_http_port, client_private_key_pem, client_certificate_pem, server_certificate_pem) = {
+    let (host_address, host_http_port, server_certificate_pem) = {
         let hosts = data.hosts.read().await;
         info!("🚀 [Streamers API] Total hosts available: {}", hosts.len());
         let Some(host) = hosts.get(req.host_id as usize) else {
@@ -93,16 +93,11 @@ pub async fn create_streamer(
         let host = &mut host.moonlight;
 
         info!("🚀 [Streamers API] Host address: {}, checking pairing...", host.address());
-        if let Some(client_private_key) = host.client_private_key()
-            && let Some(client_certificate) = host.client_certificate()
-            && let Some(server_certificate) = host.server_certificate()
-        {
-            info!("🚀 [Streamers API] Host is paired, got certificates");
+        if let Some(server_certificate) = host.server_certificate() {
+            info!("🚀 [Streamers API] Host is paired, got server certificate");
             (
                 host.address().to_string(),
                 host.http_port(),
-                client_private_key.to_string(),
-                client_certificate.to_string(),
                 server_certificate.to_string(),
             )
         } else {
@@ -113,6 +108,69 @@ pub async fn create_streamer(
         }
     };
     info!("🚀 [Streamers API] Host info retrieved successfully");
+
+    // CRITICAL: Generate UNIQUE pairing credentials for this streamer
+    // Wolf identifies clients by certificate hash - shared certs = same client_id
+    // Each streamer needs unique cert to get unique client_id and avoid session conflicts
+    info!("🚀 [Streamers API] Generating unique pairing credentials for streamer {}", req.streamer_id);
+    use moonlight_common::pair::generate_new_client;
+    use moonlight_common::PairPin;
+
+    let client_auth = match generate_new_client() {
+        Ok(auth) => auth,
+        Err(err) => {
+            warn!("🚀 [Streamers API] Failed to generate client credentials: {:?}", err);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to generate client credentials: {:?}", err)
+            }));
+        }
+    };
+
+    let client_private_key_pem = client_auth.private_key.to_string();
+    let client_certificate_pem = client_auth.certificate.to_string();
+
+    info!("🚀 [Streamers API] Generated unique client credentials, now auto-pairing...");
+
+    // Auto-pair using internal PIN
+    let pin = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN")
+        .ok()
+        .and_then(|pin_str| {
+            if pin_str.len() == 4 && pin_str.chars().all(|c| c.is_ascii_digit()) {
+                let digits: Vec<u8> = pin_str.chars().map(|c| c.to_digit(10).unwrap() as u8).collect();
+                PairPin::from_array([digits[0], digits[1], digits[2], digits[3]])
+            } else {
+                None
+            }
+        });
+
+    let Some(pin) = pin else {
+        warn!("🚀 [Streamers API] MOONLIGHT_INTERNAL_PAIRING_PIN not configured or invalid");
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": "Auto-pairing PIN not configured"
+        }));
+    };
+
+    // Create temporary host to pair
+    use moonlight_common::network::reqwest::ReqwestMoonlightHost;
+    let mut temp_host = match ReqwestMoonlightHost::new(host_address.clone(), host_http_port, None) {
+        Ok(h) => h,
+        Err(err) => {
+            warn!("🚀 [Streamers API] Failed to create temp host: {:?}", err);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Failed to create host: {:?}", err)
+            }));
+        }
+    };
+
+    // Pair with unique credentials
+    if let Err(err) = temp_host.pair(&client_auth, format!("streamer-{}", req.streamer_id), pin).await {
+        warn!("🚀 [Streamers API] Auto-pairing failed: {:?}", err);
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Auto-pairing failed: {:?}", err)
+        }));
+    }
+
+    info!("🚀 [Streamers API] Auto-pairing successful with unique credentials!");
 
     // CRITICAL: Clear host cache to force fresh app list query
     // When Wolf creates a new app, moonlight-web doesn't know about it until cache is cleared
@@ -320,6 +378,7 @@ pub async fn create_streamer(
 
     // NOW send Init and StartMoonlight messages (after receiver is listening)
     info!("🚀 [Streamers API] Sending Init IPC message to streamer...");
+    info!("🚀 [Streamers API] client_unique_id={}, app_id={}", req.client_unique_id, req.app_id);
     {
         let mut sender = streamer_state.ipc_sender.lock().await;
         sender.send(ServerIpcMessage::Init {
@@ -327,7 +386,7 @@ pub async fn create_streamer(
             stream_settings,
             host_address,
             host_http_port,
-            host_unique_id: Some(req.client_unique_id),
+            host_unique_id: Some(req.client_unique_id.clone()),
             client_private_key_pem,
             client_certificate_pem,
             server_certificate_pem,
