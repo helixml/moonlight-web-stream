@@ -87,16 +87,30 @@ impl AudioDecoder for OpusTrackSampleAudioDecoder {
         let duration =
             Duration::from_secs_f64(config.samples_per_frame as f64 / config.sample_rate as f64);
 
-        let data = Bytes::copy_from_slice(data);
+        let data_bytes = Bytes::copy_from_slice(data);
 
         let sample = Sample {
-            data,
+            data: data_bytes.clone(),
             duration,
             // Time should be set if you want fine-grained sync
             ..Default::default()
         };
 
+        // Send to legacy peer
         self.decoder.blocking_send_sample(sample);
+
+        // Broadcast to all multi-peers
+        use crate::broadcaster::AudioSample;
+        let audio_sample = AudioSample {
+            data: Arc::new(data_bytes.to_vec()),
+            timestamp: 0, // TODO: proper timestamp
+        };
+        self.decoder.stream.runtime.spawn({
+            let broadcaster = self.decoder.stream.audio_broadcaster.clone();
+            async move {
+                broadcaster.broadcast(audio_sample).await;
+            }
+        });
     }
 
     fn config(&self) -> AudioConfig {

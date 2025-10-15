@@ -120,12 +120,13 @@ impl TrackSampleVideoDecoder {
         timestamp: u32,
     ) {
         for sample in samples.drain(..) {
+            let sample_bytes = sample.freeze();
             let packets = match packetize(
                 payloader,
                 RTP_OUTBOUND_MTU,
                 0, // is set in the write fn
                 timestamp,
-                &sample.freeze(),
+                &sample_bytes,
             ) {
                 Ok(value) => value,
                 Err(err) => {
@@ -135,7 +136,29 @@ impl TrackSampleVideoDecoder {
             };
 
             for packet in packets {
-                sender.blocking_send_sample(packet);
+                // Send to legacy peer
+                sender.blocking_send_sample(packet.clone());
+
+                // Broadcast to all multi-peers
+                use crate::broadcaster::VideoFrame;
+                use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
+                let frame = VideoFrame {
+                    data: Arc::new(packet.payload.to_vec()),
+                    codec: RTCRtpCodecCapability {
+                        mime_type: "video/H264".to_owned(),
+                        clock_rate: 90000,
+                        channels: 0,
+                        sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                        rtcp_feedback: vec![],
+                    },
+                    timestamp: packet.header.timestamp,
+                };
+                sender.stream.runtime.spawn({
+                    let broadcaster = sender.stream.video_broadcaster.clone();
+                    async move {
+                        broadcaster.broadcast(frame).await;
+                    }
+                });
             }
         }
     }

@@ -46,6 +46,7 @@ use webrtc::{
         peer_connection_state::RTCPeerConnectionState,
         sdp::{sdp_type::RTCSdpType, session_description::RTCSessionDescription},
     },
+    track::track_local::{TrackLocal, TrackLocalWriter},
 };
 
 use common::api_bindings::{
@@ -884,11 +885,96 @@ impl StreamConnection {
         }));
 
         // Subscribe peer to broadcasters
-        let video_rx = self.video_broadcaster.subscribe(peer_id.clone()).await;
-        let audio_rx = self.audio_broadcaster.subscribe(peer_id.clone()).await;
+        let mut video_rx = self.video_broadcaster.subscribe(peer_id.clone()).await;
+        let mut audio_rx = self.audio_broadcaster.subscribe(peer_id.clone()).await;
 
-        // TODO: Spawn tasks to read from video_rx/audio_rx and write to peer tracks
-        // This is the final missing piece for true multi-peer video/audio
+        // Create video track (using H264 for now - most compatible)
+        use webrtc::{
+            api::media_engine::MIME_TYPE_H264,
+            track::track_local::track_local_static_rtp::TrackLocalStaticRTP,
+            rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+        };
+
+        let video_track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            format!("video-{}", peer_id),
+            "moonlight-peer".to_string(),
+        ));
+
+        // Create audio track (Opus)
+        use webrtc::api::media_engine::MIME_TYPE_OPUS;
+        let audio_track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_OPUS.to_owned(),
+                clock_rate: 48000,
+                channels: 2,
+                sdp_fmtp_line: "".to_owned(),
+                rtcp_feedback: vec![],
+            },
+            format!("audio-{}", peer_id),
+            "moonlight-peer".to_string(),
+        ));
+
+        // Add tracks to peer connection
+        peer_connection.add_track(Arc::clone(&video_track) as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>).await?;
+        peer_connection.add_track(Arc::clone(&audio_track) as Arc<dyn webrtc::track::track_local::TrackLocal + Send + Sync>).await?;
+
+        // Spawn task to forward broadcast video frames to this peer
+        let peer_id_video = peer_id.clone();
+        spawn(async move {
+            while let Some(frame) = video_rx.recv().await {
+                // Write raw data to track (frames come from decoder already encoded)
+                if let Err(err) = video_track.write_rtp(&webrtc::rtp::packet::Packet {
+                    header: webrtc::rtp::header::Header {
+                        version: 2,
+                        padding: false,
+                        extension: false,
+                        marker: true,
+                        payload_type: 96, // H264
+                        sequence_number: 0, // Track handles this
+                        timestamp: frame.timestamp,
+                        ssrc: 0, // Track handles this
+                        ..Default::default()
+                    },
+                    payload: frame.data.to_vec().into(),
+                }).await {
+                    warn!("[Peer {}] Failed to write video: {err:?}", peer_id_video);
+                    break;
+                }
+            }
+            info!("[Peer {}] Video forwarding task ended", peer_id_video);
+        });
+
+        // Spawn task to forward broadcast audio samples to this peer
+        let peer_id_audio = peer_id.clone();
+        spawn(async move {
+            while let Some(sample) = audio_rx.recv().await {
+                if let Err(err) = audio_track.write_rtp(&webrtc::rtp::packet::Packet {
+                    header: webrtc::rtp::header::Header {
+                        version: 2,
+                        padding: false,
+                        extension: false,
+                        marker: true,
+                        payload_type: 111, // Opus
+                        sequence_number: 0,
+                        timestamp: sample.timestamp,
+                        ssrc: 0,
+                        ..Default::default()
+                    },
+                    payload: sample.data.to_vec().into(),
+                }).await {
+                    warn!("[Peer {}] Failed to write audio: {err:?}", peer_id_audio);
+                    break;
+                }
+            }
+            info!("[Peer {}] Audio forwarding task ended", peer_id_audio);
+        });
 
         // Send WebRTC config to peer
         let mut sender = self.ipc_sender.clone();

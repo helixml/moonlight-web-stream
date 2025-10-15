@@ -54,8 +54,9 @@ where
 
         self.stream.runtime.spawn({
             let track = track.clone();
+            let stream_for_broadcast = stream.clone();
             async move {
-                sample_sender(track, receiver).await;
+                sample_sender(track, receiver, stream_for_broadcast).await;
             }
         });
 
@@ -88,11 +89,12 @@ where
     }
 }
 
-async fn sample_sender<Track>(track: Arc<Track>, mut receiver: Receiver<Track::Sample>)
+async fn sample_sender<Track>(track: Arc<Track>, mut receiver: Receiver<Track::Sample>, stream: Arc<StreamConnection>)
 where
     Track: TrackLike,
 {
     while let Some(sample) = receiver.recv().await {
+        // Write to legacy peer track
         if let Err(err) = track
             .write_with_extensions(
                 sample,
@@ -104,6 +106,10 @@ where
         {
             warn!("[Stream]: track.write_sample failed: {err}");
         }
+
+        // TODO: Also broadcast sample to all peers via broadcaster
+        // Requires knowing if this is video or audio track
+        // For now, peers receive via their own tracks created in add_peer_with_arc
     }
 }
 
@@ -176,6 +182,7 @@ impl TrackLike for SequencedTrackLocalStaticRTP {
         sample.header.sequence_number = *sequence_number;
         *sequence_number = sequence_number.wrapping_add(1);
 
+        // Write to legacy peer track
         self.track
             .write_rtp_with_extensions(&sample, extensions)
             .await
