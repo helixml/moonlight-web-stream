@@ -442,20 +442,13 @@ pub async fn start_host(
                     if is_kickoff_session { "kickoff " } else { "" },
                     session_clone.session_id);
 
-                // CRITICAL: Send Stop message to streamer FIRST so it can call stop() and send cancel
-                {
-                    let mut ipc_sender = session_clone.ipc_sender.lock().await;
-                    ipc_sender.send(ServerIpcMessage::Stop).await;
-                    info!("[Stream]: Sent Stop IPC to streamer for clean cancel");
-                }
-
-                // Give streamer a moment to send cancel before killing
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
+                // Remove from session registry
                 let mut sessions = data_clone.sessions.write().await;
                 sessions.remove(&session_clone.session_id);
+                drop(sessions);
 
-                // Kill streamer (after it had chance to cancel)
+                // Streamer should have already sent cancel via stop() before exiting
+                // If it didn't, kill it forcefully as cleanup
                 use tokio::process::Child;
                 let mut streamer: tokio::sync::MutexGuard<Child> = session_clone.streamer.lock().await;
                 if let Err(err) = streamer.kill().await {
@@ -509,6 +502,43 @@ pub async fn start_host(
         } else {
             // Keepalive mode: close WebSocket immediately (no WebRTC needed)
             info!("[Stream]: Keepalive mode - closing WebSocket, streamer will run headless");
+
+            // For kickoff sessions (ending in "-kickoff"), send Stop to trigger clean cancel
+            if session_id.ends_with("-kickoff") {
+                info!("[Stream]: Kickoff session detected, sending Stop for clean cancel");
+
+                // Clone what we need before spawning
+                let ipc_sender_clone = stream_session.ipc_sender.clone();
+                let streamer_clone = stream_session.streamer.clone();
+
+                // Send Stop and wait for streamer to exit in background task
+                spawn(async move {
+                    {
+                        let mut ipc_sender = ipc_sender_clone.lock().await;
+                        ipc_sender.send(ServerIpcMessage::Stop).await;
+                        info!("[Stream]: Sent Stop IPC to kickoff streamer");
+                    }
+
+                    // Wait for streamer to exit (guarantees cancel completed)
+                    let mut child = streamer_clone.lock().await;
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_secs(2),
+                        child.wait()
+                    ).await {
+                        Ok(Ok(_)) => {
+                            info!("[Stream]: Kickoff streamer exited cleanly after cancel");
+                        }
+                        Ok(Err(err)) => {
+                            warn!("[Stream]: Error waiting for kickoff streamer: {err:?}");
+                        }
+                        Err(_) => {
+                            warn!("[Stream]: Kickoff streamer didn't exit within 2s, killing");
+                            let _ = child.kill().await;
+                        }
+                    }
+                });
+            }
+
             let _ = session.close(None).await;
         }
     });
