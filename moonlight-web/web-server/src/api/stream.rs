@@ -495,10 +495,19 @@ pub async fn start_host(
                 ipc.send(ServerIpcMessage::WebSocket(message)).await;
             }
 
-            // WebSocket disconnected - set to None (session goes to keepalive mode)
-            info!("[Stream]: WebSocket disconnected for session {}, entering keepalive mode", session_id);
+            // WebSocket disconnected - send Stop for clean cancel, then enter keepalive mode
+            info!("[Stream]: WebSocket disconnected for session {}, sending Stop for clean cancel", session_id);
+
+            // Send Stop to ensure streamer calls cancel even if peer never reached Failed state
+            {
+                let mut ipc_sender = stream_session.ipc_sender.lock().await;
+                ipc_sender.send(ServerIpcMessage::Stop).await;
+            }
+
             let mut ws_lock = stream_session.websocket.lock().await;
             *ws_lock = None;
+
+            info!("[Stream]: Session {} entering keepalive mode after Stop sent", session_id);
         } else {
             // Keepalive mode: WebSocket closes immediately after opening
             info!("[Stream]: Keepalive mode WebSocket closing - sending Stop for clean cancel");
