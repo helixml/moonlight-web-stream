@@ -630,19 +630,10 @@ impl StreamConnection {
                 // Browser client joined the keepalive session
                 info!("[Keepalive]: Browser client joined keepalive session");
 
-                // RECREATE EVERYTHING: Stop stream, create fresh peer, restart with tracks
-                info!("[Keepalive]: Recreating peer + stream for browser (avoids stale track bindings)");
+                // RECREATE WEBRTC PEER ONLY (keep Moonlight running!)
+                info!("[Keepalive]: Creating fresh WebRTC peer without stopping Moonlight");
 
-                // Step 1: Stop existing Moonlight stream
-                {
-                    let mut stream_guard = self.stream.write().await;
-                    if let Some(stream) = stream_guard.take() {
-                        info!("[Keepalive]: Stopping existing Moonlight stream");
-                        drop(stream);
-                    }
-                }
-
-                // Step 2: Create completely fresh peer + input + channel
+                // Step 1: Create completely fresh peer + input + channel (DON'T stop Moonlight)
                 let new_peer = Arc::new(self.api.new_peer_connection(self.rtc_config.clone()).await.expect("Failed to create peer"));
                 let new_input = StreamInput::new();
                 let new_channel = new_peer.create_data_channel("general", None).await.expect("Failed to create channel");
@@ -672,12 +663,12 @@ impl StreamConnection {
                     Box::pin(async move { this.on_data_channel(channel).await; })
                 }));
 
-                // Step 4: Replace peer, input, channel
+                // Step 2: Replace peer, input, channel WHILE Moonlight keeps running
                 *self.peer.write().await = new_peer;
                 *self.input.write().await = new_input;
                 *self.general_channel.write().await = new_channel;
 
-                // Step 5: Send WebRTC config to browser
+                // Step 3: Send WebRTC config to browser
                 let ice_servers = self.rtc_config.ice_servers.iter()
                     .cloned()
                     .map(from_webrtc_ice)
@@ -687,18 +678,16 @@ impl StreamConnection {
                     .send(StreamerIpcMessage::WebSocket(StreamServerMessage::WebRtcConfig { ice_servers }))
                     .await;
 
-                // Step 6: Send fresh offer (NO ICE restart - brand new peer!)
+                // Step 4: Send fresh offer (NO ICE restart - brand new peer!)
                 info!("[Keepalive]: Sending fresh offer to browser");
                 if !self.send_offer().await {
                     warn!("[Keepalive]: Failed to send offer");
                     return;
                 }
 
-                // Step 7: Restart Moonlight stream (tracks will be created successfully now)
-                info!("[Keepalive]: Restarting Moonlight stream with fresh WebRTC tracks");
-                if let Err(err) = self.start_stream().await {
-                    warn!("[Keepalive]: Failed to restart stream: {err:?}");
-                }
+                info!("[Keepalive]: Fresh peer created, Moonlight still running, waiting for ICE connection");
+                // ICE will connect, then on_ice_connection_state_change will handle the rest
+                // But Moonlight is ALREADY running, so we skip starting it again
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;
