@@ -213,6 +213,21 @@ pub async fn create_streamer(
         while let Some(message) = ipc_receiver.recv().await {
             info!("🔄 [Streamer {}] Received IPC message: {:?}", streamer_id, message);
             match message {
+                // Legacy WebSocket messages (backward compatibility)
+                StreamerIpcMessage::WebSocket(message) => {
+                    info!("📨 [Streamer {}] WebSocket message: {:?}", streamer_id, message);
+                    // In headless mode, broadcast to all connected peers
+                    // If no peers connected yet, these are just logged (no UI to show progress to)
+                    let peers = streamer_state_clone.peer_websockets.read().await;
+                    if !peers.is_empty() {
+                        if let Some(json) = serialize_json(&message) {
+                            for session in peers.values() {
+                                let mut session = session.lock().await;
+                                let _ = session.text(json.clone()).await;
+                            }
+                        }
+                    }
+                }
                 StreamerIpcMessage::MoonlightConnected => {
                     info!("✅ [Streamer {}] MOONLIGHT CONNECTED! Stream is live headless!", streamer_id);
                     *streamer_state_clone.moonlight_connected.write().await = true;
@@ -237,12 +252,12 @@ pub async fn create_streamer(
                         }
                     }
                 }
+                StreamerIpcMessage::StreamerReady { streamer_id: ready_id } => {
+                    info!("🎬 [Streamer {}] Streamer ready: {}", streamer_id, ready_id);
+                }
                 StreamerIpcMessage::Stop => {
                     info!("🛑 [Streamer {}] Received Stop IPC, exiting receiver task", streamer_id);
                     break;
-                }
-                _ => {
-                    info!("🔄 [Streamer {}] Received other IPC message (WebSocket/etc)", streamer_id);
                 }
             }
         }
