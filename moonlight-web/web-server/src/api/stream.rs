@@ -509,18 +509,24 @@ pub async fn start_host(
 
             info!("[Stream]: Session {} entering keepalive mode after Stop sent", session_id);
         } else {
-            // Keepalive mode: WebSocket closes immediately after opening
-            info!("[Stream]: Keepalive mode WebSocket closing - sending Stop for clean cancel");
+            // Keepalive mode: Keep WebSocket open, let client control disconnect
+            // When client (Helix) closes after 10s, we'll detect it and send Stop
+            info!("[Stream]: Keepalive mode - keeping WebSocket open for client-controlled disconnect");
 
-            // Send Stop to trigger streamer's stop() → cancel() flow
-            let mut ipc_sender = stream_session.ipc_sender.lock().await;
-            ipc_sender.send(ServerIpcMessage::Stop).await;
-            drop(ipc_sender);
+            // Wait for WebSocket to close (when Helix disconnects after 10s)
+            while let Some(Ok(Message::Text(_text))) = stream.recv().await {
+                // Keepalive doesn't send messages, but keep reading in case
+                debug!("[Stream]: Keepalive received unexpected message, ignoring");
+            }
 
-            let _ = session.close(None).await;
+            // WebSocket closed by client (Helix after 10s) - send Stop for clean shutdown
+            info!("[Stream]: Keepalive WebSocket closed by client, sending Stop for clean cancel");
+            {
+                let mut ipc_sender = stream_session.ipc_sender.lock().await;
+                ipc_sender.send(ServerIpcMessage::Stop).await;
+            }
 
-            // Streamer will call stop() → cancel() → exit cleanly
-            info!("[Stream]: Stop sent to keepalive streamer, waiting for clean shutdown");
+            info!("[Stream]: Stop sent to keepalive streamer - will drop stream cleanly");
         }
     });
 
