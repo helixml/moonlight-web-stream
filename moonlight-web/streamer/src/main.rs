@@ -678,16 +678,22 @@ impl StreamConnection {
                     .send(StreamerIpcMessage::WebSocket(StreamServerMessage::WebRtcConfig { ice_servers }))
                     .await;
 
-                // Step 4: Send fresh offer (NO ICE restart - brand new peer!)
-                info!("[Keepalive]: Sending fresh offer to browser");
-                if !self.send_offer().await {
-                    warn!("[Keepalive]: Failed to send offer");
-                    return;
+                // Step 4: Stop old Moonlight stream (will cause Wolf to suspend)
+                {
+                    let mut stream_guard = self.stream.write().await;
+                    if let Some(stream) = stream_guard.take() {
+                        info!("[Keepalive]: Stopping old Moonlight stream before restart");
+                        drop(stream);
+                    }
                 }
 
-                info!("[Keepalive]: Fresh peer created, Moonlight still running, waiting for ICE connection");
-                // ICE will connect, then on_ice_connection_state_change will handle the rest
-                // But Moonlight is ALREADY running, so we skip starting it again
+                // Step 5: Restart Moonlight (should RESUME same app, creating fresh tracks on new peer)
+                info!("[Keepalive]: Restarting Moonlight to create tracks on fresh peer");
+                if let Err(err) = self.start_stream().await {
+                    warn!("[Keepalive]: Failed to restart stream: {err:?}");
+                }
+
+                // start_stream() sends offer + ConnectionComplete
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;
