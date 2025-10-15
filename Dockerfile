@@ -7,18 +7,23 @@ ARG BUILD_MODE=debug
 # Install Rust nightly (required by moonlight-web-stream)
 RUN rustup default nightly
 
-# Install build dependencies
+# Install build dependencies (including nodejs/npm for frontend build)
 RUN apt-get update && apt-get install -y \
     cmake \
     libssl-dev \
     pkg-config \
     clang \
     libclang-dev \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # CRITICAL: Tell openssl-sys to use system OpenSSL instead of building from source
 # This prevents slow perl-based OpenSSL compilation (no more perl processes!)
 ENV OPENSSL_NO_VENDOR=1
+ENV OPENSSL_DIR=/usr
+ENV OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu
+ENV OPENSSL_INCLUDE_DIR=/usr/include
 
 WORKDIR /build
 
@@ -40,7 +45,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # Build web frontend
 WORKDIR /build/moonlight-web/web-server
-RUN apt-get update && apt-get install -y nodejs npm && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.npm \
     npm install
 RUN npm run build
