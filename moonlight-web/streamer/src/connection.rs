@@ -87,9 +87,9 @@ impl ConnectionListener for StreamConnectionListener {
 
         let stream = self.stream.clone();
         self.stream.runtime.spawn(async move {
-            if let Some(message) = serialize_json(&StreamServerGeneralMessage::ConnectionTerminated)
-            {
-                let _ = stream.general_channel.send_text(message).await;
+            let channel = stream.general_channel.read().await;
+            if let Some(message) = serialize_json(&StreamServerGeneralMessage::ConnectionTerminated) {
+                let _ = channel.send_text(message).await;
             }
         });
     }
@@ -101,12 +101,13 @@ impl ConnectionListener for StreamConnectionListener {
     fn connection_status_update(&mut self, status: ConnectionStatus) {
         let stream = self.stream.clone();
         self.stream.runtime.spawn(async move {
+            let channel = stream.general_channel.read().await;
             if let Some(message) =
                 serialize_json(&StreamServerGeneralMessage::ConnectionStatusUpdate {
                     status: status.into(),
                 })
             {
-                let _ = stream.general_channel.send_text(message).await;
+                let _ = channel.send_text(message).await;
             }
         });
     }
@@ -123,7 +124,7 @@ impl ConnectionListener for StreamConnectionListener {
 
         self.stream.runtime.spawn(async move {
             stream
-                .input
+                .input.read().await
                 .send_controller_rumble(
                     controller_number as u8,
                     low_frequency_motor,
@@ -143,7 +144,7 @@ impl ConnectionListener for StreamConnectionListener {
 
         self.stream.runtime.spawn(async move {
             stream
-                .input
+                .input.read().await
                 .send_controller_trigger_rumble(
                     controller_number as u8,
                     left_trigger_motor,

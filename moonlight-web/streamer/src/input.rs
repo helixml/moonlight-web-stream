@@ -298,7 +298,8 @@ impl StreamInput {
                 return;
             };
             let active_gamepads = {
-                let mut active_gamepads = connection.input.active_gamepads.write().await;
+                let input = connection.input.read().await;
+                let mut active_gamepads = input.active_gamepads.write().await;
                 active_gamepads.insert(id_gamepads);
                 *active_gamepads
             };
@@ -319,7 +320,8 @@ impl StreamInput {
                 return;
             };
             let new_active_gamepads = {
-                let mut active_gamepads = connection.input.active_gamepads.write().await;
+                let input = connection.input.read().await;
+                let mut active_gamepads = input.active_gamepads.write().await;
                 active_gamepads.remove(id_gamepads);
                 *active_gamepads
             };
@@ -358,7 +360,7 @@ impl StreamInput {
                 return;
             };
 
-            let active_gamepads = { *connection.input.active_gamepads.read().await };
+            let active_gamepads = { *connection.input.read().await.active_gamepads.read().await };
             if !active_gamepads.contains(gamepad) {
                 warn!("[Stream Input]: Gamepad {controller_id} not in active gamepad mask");
                 return;

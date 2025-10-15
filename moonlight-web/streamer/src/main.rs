@@ -235,11 +235,11 @@ async fn main() {
     api_registry = register_default_interceptors(api_registry, &mut api_media)
         .expect("failed to register webrtc default interceptors");
 
-    let api = APIBuilder::new()
+    let api = Arc::new(APIBuilder::new()
         .with_setting_engine(api_settings)
         .with_media_engine(api_media)
         .with_interceptor_registry(api_registry)
-        .build();
+        .build());
 
     // -- Create and Configure Peer
     let connection = StreamConnection::new(
@@ -251,7 +251,7 @@ async fn main() {
         stream_settings,
         ipc_sender.clone(),
         ipc_receiver,
-        &api,
+        api,
         rtc_config,
         keepalive_mode,
     )
@@ -293,11 +293,11 @@ struct StreamConnection {
     pub moonlight: MoonlightInstance,
     pub info: StreamInfo,
     pub settings: StreamSettings,
-    pub peer: Arc<RTCPeerConnection>,
+    pub peer: RwLock<Arc<RTCPeerConnection>>,  // RwLock to allow replacing when browser joins
     pub ipc_sender: IpcSender<StreamerIpcMessage>,
-    pub general_channel: Arc<RTCDataChannel>,
+    pub general_channel: RwLock<Arc<RTCDataChannel>>,  // RwLock to allow replacing
     // Input
-    pub input: StreamInput,
+    pub input: RwLock<StreamInput>,  // RwLock to allow replacing
     // Video
     pub video_size: Mutex<(u32, u32)>,
     // Stream
@@ -305,6 +305,9 @@ struct StreamConnection {
     pub terminate: Notify,
     // Keepalive mode: WebRTC peer is optional, only Moonlight stream matters
     pub keepalive_mode: bool,
+    // Store API + config for recreating peer when browser joins
+    pub api: Arc<API>,
+    pub rtc_config: RTCConfiguration,
 }
 
 impl StreamConnection {
@@ -314,7 +317,7 @@ impl StreamConnection {
         settings: StreamSettings,
         mut ipc_sender: IpcSender<StreamerIpcMessage>,
         mut ipc_receiver: IpcReceiver<ServerIpcMessage>,
-        api: &API,
+        api: Arc<API>,
         config: RTCConfiguration,
         keepalive_mode: bool,
     ) -> Result<Arc<Self>, anyhow::Error> {
@@ -332,7 +335,7 @@ impl StreamConnection {
             ))
             .await;
 
-        let peer = Arc::new(api.new_peer_connection(config).await?);
+        let peer = Arc::new(api.new_peer_connection(config.clone()).await?);
 
         // -- Input
         let input = StreamInput::new();
@@ -344,14 +347,16 @@ impl StreamConnection {
             moonlight,
             info,
             settings,
-            peer: peer.clone(),
+            peer: RwLock::new(peer.clone()),
             ipc_sender,
-            general_channel,
+            general_channel: RwLock::new(general_channel),
             video_size: Mutex::new((0, 0)),
-            input,
+            input: RwLock::new(input),
             stream: Default::default(),
             terminate: Notify::new(),
             keepalive_mode,
+            api,
+            rtc_config: config,
         });
 
         // -- Connection state
@@ -495,7 +500,8 @@ impl StreamConnection {
     }
 
     async fn send_answer(&self) -> bool {
-        let local_description = match self.peer.create_answer(None).await {
+        let peer = self.peer.read().await;
+        let local_description = match peer.create_answer(None).await {
             Err(err) => {
                 warn!("[Signaling]: failed to create answer: {err:?}");
                 return false;
@@ -503,8 +509,7 @@ impl StreamConnection {
             Ok(value) => value,
         };
 
-        if let Err(err) = self
-            .peer
+        if let Err(err) = peer
             .set_local_description(local_description.clone())
             .await
         {
@@ -532,7 +537,8 @@ impl StreamConnection {
         true
     }
     async fn send_offer(&self) -> bool {
-        let local_description = match self.peer.create_offer(None).await {
+        let peer = self.peer.read().await;
+        let local_description = match peer.create_offer(None).await {
             Err(err) => {
                 warn!("[Signaling]: failed to create offer: {err:?}");
                 return false;
@@ -540,8 +546,7 @@ impl StreamConnection {
             Ok(value) => value,
         };
 
-        if let Err(err) = self
-            .peer
+        if let Err(err) = peer
             .set_local_description(local_description.clone())
             .await
         {
@@ -572,13 +577,15 @@ impl StreamConnection {
     async fn send_offer_with_ice_restart(&self) -> bool {
         use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
 
+        let peer = self.peer.read().await;
+
         // ICE restart generates fresh ICE credentials, preventing username conflicts
         let options = RTCOfferOptions {
             ice_restart: true,
             ..Default::default()
         };
 
-        let local_description = match self.peer.create_offer(Some(options)).await {
+        let local_description = match peer.create_offer(Some(options)).await {
             Err(err) => {
                 warn!("[Signaling]: failed to create offer with ICE restart: {err:?}");
                 return false;
@@ -586,8 +593,7 @@ impl StreamConnection {
             Ok(value) => value,
         };
 
-        if let Err(err) = self
-            .peer
+        if let Err(err) = peer
             .set_local_description(local_description.clone())
             .await
         {
@@ -624,59 +630,74 @@ impl StreamConnection {
                 // Browser client joined the keepalive session
                 info!("[Keepalive]: Browser client joined keepalive session");
 
-                // Send WebRTC configuration to the new browser client
-                let ice_servers: Vec<_> = self.peer.get_configuration().await.ice_servers.iter()
+                // RECREATE EVERYTHING: Stop stream, create fresh peer, restart with tracks
+                info!("[Keepalive]: Recreating peer + stream for browser (avoids stale track bindings)");
+
+                // Step 1: Stop existing Moonlight stream
+                {
+                    let mut stream_guard = self.stream.write().await;
+                    if let Some(stream) = stream_guard.take() {
+                        info!("[Keepalive]: Stopping existing Moonlight stream");
+                        drop(stream);
+                    }
+                }
+
+                // Step 2: Create completely fresh peer + input + channel
+                let new_peer = Arc::new(self.api.new_peer_connection(self.rtc_config.clone()).await.expect("Failed to create peer"));
+                let new_input = StreamInput::new();
+                let new_channel = new_peer.create_data_channel("general", None).await.expect("Failed to create channel");
+
+                // Step 3: Setup callbacks on NEW peer
+                let sc1 = self.clone();
+                new_peer.on_ice_connection_state_change(Box::new(move |state| {
+                    let this = sc1.clone();
+                    Box::pin(async move { this.on_ice_connection_state_change(state).await; })
+                }));
+
+                let sc2 = self.clone();
+                new_peer.on_peer_connection_state_change(Box::new(move |state| {
+                    let this = sc2.clone();
+                    Box::pin(async move { this.on_peer_connection_state_change(state).await; })
+                }));
+
+                let sc3 = self.clone();
+                new_peer.on_ice_candidate(Box::new(move |candidate| {
+                    let this = sc3.clone();
+                    Box::pin(async move { this.on_ice_candidate(candidate).await; })
+                }));
+
+                let sc4 = self.clone();
+                new_peer.on_data_channel(Box::new(move |channel| {
+                    let this = sc4.clone();
+                    Box::pin(async move { this.on_data_channel(channel).await; })
+                }));
+
+                // Step 4: Replace peer, input, channel
+                *self.peer.write().await = new_peer;
+                *self.input.write().await = new_input;
+                *self.general_channel.write().await = new_channel;
+
+                // Step 5: Send WebRTC config to browser
+                let ice_servers = self.rtc_config.ice_servers.iter()
                     .cloned()
                     .map(from_webrtc_ice)
                     .collect();
 
                 self.ipc_sender.clone()
-                    .send(StreamerIpcMessage::WebSocket(
-                        StreamServerMessage::WebRtcConfig { ice_servers }
-                    ))
+                    .send(StreamerIpcMessage::WebSocket(StreamServerMessage::WebRtcConfig { ice_servers }))
                     .await;
 
-                // Create a fresh offer with ICE restart for the new browser connection
-                // ICE restart generates new credentials, preventing stale ICE username conflicts
-                info!("[Keepalive]: Creating offer with ICE restart for browser");
-                if !self.send_offer_with_ice_restart().await {
-                    warn!("[Keepalive]: Failed to create offer for joining browser");
+                // Step 6: Send fresh offer (NO ICE restart - brand new peer!)
+                info!("[Keepalive]: Sending fresh offer to browser");
+                if !self.send_offer().await {
+                    warn!("[Keepalive]: Failed to send offer");
+                    return;
                 }
 
-                // If Moonlight stream terminated, restart it
-                let stream_active = {
-                    let stream_guard = self.stream.read().await;
-                    stream_guard.is_some()
-                };
-
-                if !stream_active {
-                    info!("[Keepalive]: Moonlight stream inactive, restarting for browser client");
-                    if let Err(err) = self.start_stream().await {
-                        warn!("[Keepalive]: Failed to restart stream for browser: {err:?}");
-                    }
-                } else {
-                    info!("[Keepalive]: Moonlight stream already active, WebRTC will attach");
-
-                    // Send ConnectionComplete to browser since stream is already running
-                    // This dismisses the "Stream connected" spinner and enables controls
-                    let (width, height) = {
-                        let video_size = self.video_size.lock().await;
-                        if *video_size == (0, 0) {
-                            (self.settings.width, self.settings.height)
-                        } else {
-                            *video_size
-                        }
-                    };
-
-                    self.ipc_sender.clone()
-                        .send(StreamerIpcMessage::WebSocket(
-                            StreamServerMessage::ConnectionComplete {
-                                capabilities: StreamCapabilities { touch: false },
-                                width,
-                                height,
-                            },
-                        ))
-                        .await;
+                // Step 7: Restart Moonlight stream (tracks will be created successfully now)
+                info!("[Keepalive]: Restarting Moonlight stream with fresh WebRTC tracks");
+                if let Err(err) = self.start_stream().await {
+                    warn!("[Keepalive]: Failed to restart stream: {err:?}");
                 }
             }
             ServerIpcMessage::Stop => {
@@ -708,7 +729,8 @@ impl StreamConnection {
                 };
 
                 let remote_ty = description.sdp_type;
-                if let Err(err) = self.peer.set_remote_description(description).await {
+                let peer = self.peer.read().await;
+                if let Err(err) = peer.set_remote_description(description).await {
                     warn!("[Signaling]: failed to set remote description: {err:?}");
                     return;
                 }
@@ -723,8 +745,8 @@ impl StreamConnection {
             )) => {
                 debug!("[Signaling] Received Ice Candidate");
 
-                if let Err(err) = self
-                    .peer
+                let peer = self.peer.read().await;
+                if let Err(err) = peer
                     .add_ice_candidate(RTCIceCandidateInit {
                         candidate: description.candidate,
                         sdp_mid: description.sdp_mid,
@@ -772,7 +794,7 @@ impl StreamConnection {
 
     // -- Data Channels
     async fn on_data_channel(self: &Arc<Self>, channel: Arc<RTCDataChannel>) {
-        self.input.on_data_channel(self, channel).await;
+        self.input.read().await.on_data_channel(self, channel).await;
     }
 
     // Start Moonlight Stream
@@ -789,7 +811,8 @@ impl StreamConnection {
 
         let mut host = self.info.host.lock().await;
 
-        let gamepads = self.input.active_gamepads.read().await;
+        let input_guard = self.input.read().await;
+        let gamepads = input_guard.active_gamepads.read().await;
 
         let video_decoder = TrackSampleVideoDecoder::new(
             self.clone(),
@@ -900,7 +923,7 @@ impl StreamConnection {
                 .await;
         });
 
-        let general_channel = self.general_channel.clone();
+        let general_channel = self.general_channel.read().await.clone();
         spawn(async move {
             if let Some(message) = serialize_json(&StreamServerGeneralMessage::ConnectionTerminated)
             {

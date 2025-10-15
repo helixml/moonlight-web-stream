@@ -61,7 +61,7 @@ where
 
         let track_sender = self.stream.runtime.block_on({
             let track = track.clone();
-            async move { stream.peer.add_track(track.track()).await }
+            async move { stream.peer.read().await.add_track(track.track()).await }
         })?;
 
         // Read incoming RTCP packets
