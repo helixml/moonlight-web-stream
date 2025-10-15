@@ -501,44 +501,8 @@ pub async fn start_host(
             *ws_lock = None;
         } else {
             // Keepalive mode: close WebSocket immediately (no WebRTC needed)
-            info!("[Stream]: Keepalive mode - closing WebSocket, streamer will run headless");
-
-            // For kickoff sessions (ending in "-kickoff"), send Stop to trigger clean cancel
-            if session_id.ends_with("-kickoff") {
-                info!("[Stream]: Kickoff session detected, sending Stop for clean cancel");
-
-                // Clone what we need before spawning
-                let ipc_sender_clone = stream_session.ipc_sender.clone();
-                let streamer_clone = stream_session.streamer.clone();
-
-                // Send Stop and wait for streamer to exit in background task
-                spawn(async move {
-                    {
-                        let mut ipc_sender = ipc_sender_clone.lock().await;
-                        ipc_sender.send(ServerIpcMessage::Stop).await;
-                        info!("[Stream]: Sent Stop IPC to kickoff streamer");
-                    }
-
-                    // Wait for streamer to exit (guarantees cancel completed)
-                    let mut child = streamer_clone.lock().await;
-                    match tokio::time::timeout(
-                        tokio::time::Duration::from_secs(2),
-                        child.wait()
-                    ).await {
-                        Ok(Ok(_)) => {
-                            info!("[Stream]: Kickoff streamer exited cleanly after cancel");
-                        }
-                        Ok(Err(err)) => {
-                            warn!("[Stream]: Error waiting for kickoff streamer: {err:?}");
-                        }
-                        Err(_) => {
-                            warn!("[Stream]: Kickoff streamer didn't exit within 2s, killing");
-                            let _ = child.kill().await;
-                        }
-                    }
-                });
-            }
-
+            // Streamer's peer disconnect handler will call stop() which sends cancel
+            info!("[Stream]: Keepalive mode - closing WebSocket");
             let _ = session.close(None).await;
         }
     });
