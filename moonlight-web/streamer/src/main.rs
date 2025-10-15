@@ -621,10 +621,13 @@ impl StreamConnection {
                 self.on_ws_message(message).await;
             }
             ServerIpcMessage::ClientJoined => {
-                // Browser client joined the keepalive session
-                info!("[Keepalive]: Browser client joined keepalive session");
+                // KICKOFF APPROACH: Browser joins after kickoff disconnected
+                // The kickoff triggered Wolf to start the app, making it resumable
+                // Browser connection creates fresh peer - Moonlight protocol handles RESUME automatically
+                info!("[Kickoff]: Browser client joined - no ICE restart needed (fresh peer)");
 
-                // Send WebRTC configuration to the new browser client
+                // Just send WebRTC config to the new browser client
+                // The normal WebRTC negotiation will handle everything
                 let ice_servers: Vec<_> = self.peer.get_configuration().await.ice_servers.iter()
                     .cloned()
                     .map(from_webrtc_ice)
@@ -636,48 +639,8 @@ impl StreamConnection {
                     ))
                     .await;
 
-                // Create a fresh offer with ICE restart for the new browser connection
-                // ICE restart generates new credentials, preventing stale ICE username conflicts
-                info!("[Keepalive]: Creating offer with ICE restart for browser");
-                if !self.send_offer_with_ice_restart().await {
-                    warn!("[Keepalive]: Failed to create offer for joining browser");
-                }
-
-                // If Moonlight stream terminated, restart it
-                let stream_active = {
-                    let stream_guard = self.stream.read().await;
-                    stream_guard.is_some()
-                };
-
-                if !stream_active {
-                    info!("[Keepalive]: Moonlight stream inactive, restarting for browser client");
-                    if let Err(err) = self.start_stream().await {
-                        warn!("[Keepalive]: Failed to restart stream for browser: {err:?}");
-                    }
-                } else {
-                    info!("[Keepalive]: Moonlight stream already active, WebRTC will attach");
-
-                    // Send ConnectionComplete to browser since stream is already running
-                    // This dismisses the "Stream connected" spinner and enables controls
-                    let (width, height) = {
-                        let video_size = self.video_size.lock().await;
-                        if *video_size == (0, 0) {
-                            (self.settings.width, self.settings.height)
-                        } else {
-                            *video_size
-                        }
-                    };
-
-                    self.ipc_sender.clone()
-                        .send(StreamerIpcMessage::WebSocket(
-                            StreamServerMessage::ConnectionComplete {
-                                capabilities: StreamCapabilities { touch: false },
-                                width,
-                                height,
-                            },
-                        ))
-                        .await;
-                }
+                // NOTE: Removed ICE restart - browser gets fresh peer, clean track bindings
+                // NOTE: Removed stream restart - Moonlight protocol auto-RESUME handles this
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;
