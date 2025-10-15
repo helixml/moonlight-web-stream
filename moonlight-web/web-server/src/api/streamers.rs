@@ -52,7 +52,7 @@ impl StreamerRegistry {
 
 /// Create a new streamer with persistent Moonlight stream
 /// POST /api/streamers
-#[post("/api/streamers")]
+#[post("/streamers")]
 pub async fn create_streamer(
     data: Data<RuntimeApiData>,
     registry: Data<Arc<StreamerRegistry>>,
@@ -239,7 +239,7 @@ pub async fn create_streamer(
 }
 
 /// List all active streamers
-#[get("/api/streamers")]
+#[get("/streamers")]
 pub async fn list_streamers(
     registry: Data<Arc<StreamerRegistry>>,
 ) -> Json<ListStreamersResponse> {
@@ -270,7 +270,7 @@ pub async fn list_streamers(
 }
 
 /// Get details about a specific streamer
-#[get("/api/streamers/{streamer_id}")]
+#[get("/streamers/{streamer_id}")]
 pub async fn get_streamer(
     registry: Data<Arc<StreamerRegistry>>,
     path: Path<String>,
@@ -304,7 +304,7 @@ pub async fn get_streamer(
 }
 
 /// Stop a streamer and terminate its Moonlight stream
-#[delete("/api/streamers/{streamer_id}")]
+#[delete("/streamers/{streamer_id}")]
 pub async fn delete_streamer(
     registry: Data<Arc<StreamerRegistry>>,
     path: Path<String>,
@@ -333,7 +333,7 @@ pub async fn delete_streamer(
 }
 
 /// WebSocket endpoint for WebRTC peer to join existing streamer
-#[get("/api/streamers/{streamer_id}/peer")]
+#[get("/streamers/{streamer_id}/peer")]
 pub async fn connect_peer(
     registry: Data<Arc<StreamerRegistry>>,
     path: Path<String>,
