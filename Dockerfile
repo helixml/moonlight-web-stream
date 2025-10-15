@@ -1,6 +1,9 @@
 # Multi-stage build for moonlight-web-stream
 FROM rust:latest as builder
 
+# Build mode: debug or release (default: debug)
+ARG BUILD_MODE=debug
+
 # Install Rust nightly (required by moonlight-web-stream)
 RUN rustup default nightly
 
@@ -13,17 +16,27 @@ RUN apt-get update && apt-get install -y \
     libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# CRITICAL: Tell openssl-sys to use system OpenSSL instead of building from source
+# This prevents slow perl-based OpenSSL compilation (no more perl processes!)
+ENV OPENSSL_NO_VENDOR=1
+
 WORKDIR /build
 
 # Copy source code
 COPY . .
 
-# Build the release binary with cargo cache
+# Build the binary with cargo cache (debug or release based on BUILD_MODE)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release && \
-    cp /build/target/release/web-server /tmp/web-server && \
-    cp /build/target/release/streamer /tmp/streamer
+    if [ "$BUILD_MODE" = "debug" ]; then \
+        cargo build && \
+        cp /build/target/debug/web-server /tmp/web-server && \
+        cp /build/target/debug/streamer /tmp/streamer; \
+    else \
+        cargo build --release && \
+        cp /build/target/release/web-server /tmp/web-server && \
+        cp /build/target/release/streamer /tmp/streamer; \
+    fi
 
 # Build web frontend
 WORKDIR /build/moonlight-web/web-server

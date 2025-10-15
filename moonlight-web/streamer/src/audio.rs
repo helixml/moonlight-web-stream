@@ -99,18 +99,7 @@ impl AudioDecoder for OpusTrackSampleAudioDecoder {
         // Send to legacy peer
         self.decoder.blocking_send_sample(sample);
 
-        // Broadcast to all multi-peers
-        use crate::broadcaster::AudioSample;
-        let audio_sample = AudioSample {
-            data: Arc::new(data_bytes.to_vec()),
-            timestamp: 0, // TODO: proper timestamp
-        };
-        self.decoder.stream.runtime.spawn({
-            let broadcaster = self.decoder.stream.audio_broadcaster.clone();
-            async move {
-                broadcaster.broadcast(audio_sample).await;
-            }
-        });
+        // TODO: Broadcasting disabled - same as video
     }
 
     fn config(&self) -> AudioConfig {
