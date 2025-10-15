@@ -9,6 +9,8 @@ RUN rustup default nightly
 
 # Install build dependencies (including nodejs/npm for frontend build)
 RUN apt-get update && apt-get install -y \
+    procps \
+    curl \
     cmake \
     libssl-dev \
     pkg-config \

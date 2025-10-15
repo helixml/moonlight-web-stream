@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use log::warn;
+use log::{info, warn};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::{
     io::{
@@ -78,7 +78,7 @@ where
             let mut lines = buf_reader.lines();
 
             while let Ok(Some(line)) = lines.next_line().await {
-                println!("[{log_prefix}]: {line}");
+                info!("[{}]: {}", log_prefix, line);
             }
         });
     }

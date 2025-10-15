@@ -143,6 +143,17 @@ pub async fn create_streamer(
     };
 
     info!("🚀 [Streamers API] Spawning streamer process: {}", config.streamer_path);
+    info!("🚀 [Streamers API] Current working directory: {:?}", std::env::current_dir());
+
+    // Verify streamer binary exists
+    let streamer_path = std::path::Path::new(&config.streamer_path);
+    if !streamer_path.exists() {
+        warn!("🚀 [Streamers API] ERROR: Streamer binary not found at: {}", config.streamer_path);
+        return HttpResponse::InternalServerError().json(serde_json::json!({
+            "error": format!("Streamer binary not found at: {}", config.streamer_path)
+        }));
+    }
+    info!("🚀 [Streamers API] Streamer binary exists at: {}", config.streamer_path);
 
     // Spawn streamer process
     let (mut child, stdin, stdout) = match Command::new(&config.streamer_path)
@@ -153,11 +164,29 @@ pub async fn create_streamer(
         .spawn()
     {
         Ok(mut child) => {
-            info!("🚀 [Streamers API] Streamer process spawned successfully, PID will be assigned");
+            let pid = child.id();
+            info!("🚀 [Streamers API] Streamer process spawned successfully, PID: {}", pid.unwrap_or(0));
+
+            // Check if process is still alive immediately after spawn
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    warn!("🚀 [Streamers API] ERROR: Streamer process ALREADY EXITED with status: {:?}", status);
+                    return HttpResponse::InternalServerError().json(serde_json::json!({
+                        "error": format!("Streamer exited immediately with status: {:?}", status)
+                    }));
+                }
+                Ok(None) => {
+                    info!("🚀 [Streamers API] Streamer process is running (PID: {})", pid.unwrap_or(0));
+                }
+                Err(e) => {
+                    warn!("🚀 [Streamers API] Failed to check streamer status: {:?}", e);
+                }
+            }
+
             if let Some(stdin) = child.stdin.take()
                 && let Some(stdout) = child.stdout.take()
             {
-                info!("🚀 [Streamers API] Got stdin/stdout from streamer process");
+                info!("🚀 [Streamers API] Got stdin/stdout from streamer process (PID: {})", pid.unwrap_or(0));
                 (child, stdin, stdout)
             } else {
                 warn!("🚀 [Streamers API] Failed to get stdin/stdout from streamer");
@@ -184,6 +213,22 @@ pub async fn create_streamer(
     ).await;
     info!("🚀 [Streamers API] IPC channels created");
 
+    // Check if streamer is still alive after IPC setup
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            warn!("🚀 [Streamers API] ERROR: Streamer exited DURING IPC setup with status: {:?}", status);
+            return HttpResponse::InternalServerError().json(serde_json::json!({
+                "error": format!("Streamer exited during IPC setup: {:?}", status)
+            }));
+        }
+        Ok(None) => {
+            info!("🚀 [Streamers API] Streamer still running after IPC setup");
+        }
+        Err(e) => {
+            warn!("🚀 [Streamers API] Failed to check streamer status after IPC: {:?}", e);
+        }
+    }
+
     // Create streamer state (with IPC sender for receiver task to use)
     let streamer_state = Arc::new(StreamerState {
         streamer_id: req.streamer_id.clone(),
@@ -207,9 +252,14 @@ pub async fn create_streamer(
     let registry_clone = registry.clone();
     let streamer_id = req.streamer_id.clone();
 
-    info!("🔧 [FIXED CODE v2] Spawning IPC receiver task BEFORE sending Init/StartMoonlight for streamer {}", streamer_id);
+    info!("🔧 [FIXED CODE v4] Spawning IPC receiver task BEFORE sending Init/StartMoonlight for streamer {}", streamer_id);
     spawn(async move {
         info!("🔄 [Streamer {}] IPC receiver task started, waiting for messages...", streamer_id);
+
+        // CRITICAL: Keep child alive by moving it into this task!
+        // When handler returns, child would be dropped and process killed (kill_on_drop=true)
+        let _child = child;
+
         while let Some(message) = ipc_receiver.recv().await {
             info!("🔄 [Streamer {}] Received IPC message: {:?}", streamer_id, message);
             match message {
