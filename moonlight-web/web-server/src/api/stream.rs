@@ -434,12 +434,17 @@ pub async fn start_host(
             info!("[Ipc]: ipc receiver is closed");
 
             // Cleanup session based on mode
-            if session_clone.mode != SessionMode::Keepalive {
-                info!("[Stream]: Cleaning up non-keepalive session {}", session_clone.session_id);
+            // KICKOFF APPROACH: Terminate kickoff sessions (ending in "-kickoff") even if keepalive mode
+            let is_kickoff_session = session_clone.session_id.ends_with("-kickoff");
+
+            if session_clone.mode != SessionMode::Keepalive || is_kickoff_session {
+                info!("[Stream]: Cleaning up {}session {}",
+                    if is_kickoff_session { "kickoff " } else { "" },
+                    session_clone.session_id);
                 let mut sessions = data_clone.sessions.write().await;
                 sessions.remove(&session_clone.session_id);
 
-                // Kill streamer for non-keepalive sessions
+                // Kill streamer
                 use tokio::process::Child;
                 let mut streamer: tokio::sync::MutexGuard<Child> = session_clone.streamer.lock().await;
                 if let Err(err) = streamer.kill().await {
