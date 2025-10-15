@@ -446,45 +446,37 @@ impl StreamConnection {
     async fn on_ice_connection_state_change(self: &Arc<Self>, state: RTCIceConnectionState) {
         info!("ICE connection state changed: {:?}", state);
 
-        #[allow(clippy::collapsible_if)]
         if matches!(state, RTCIceConnectionState::Connected) {
-            // In keepalive mode, stream is already running - don't try to start it again
-            // Otherwise we get ConnectionAlreadyExists error
-            if self.keepalive_mode {
-                let stream_active = {
-                    let stream_guard = self.stream.read().await;
-                    stream_guard.is_some()
-                };
+            // Start Moonlight stream when ICE connects (for non-keepalive connections)
+            // Keepalive mode starts stream immediately without waiting for ICE
+            let stream_active = {
+                let stream_guard = self.stream.read().await;
+                stream_guard.is_some()
+            };
 
-                if stream_active {
-                    info!("[Keepalive]: ICE connected, Moonlight stream already active");
-                    return;
-                } else {
-                    info!("[Keepalive]: ICE connected but stream inactive, starting now");
-                }
+            if stream_active {
+                info!("[Stream]: ICE connected, Moonlight stream already active");
+                return;
             }
 
+            info!("[Stream]: ICE connected, starting Moonlight stream now");
             if let Err(err) = self.start_stream().await {
                 warn!("[Stream]: failed to start stream: {err:?}");
-
                 self.stop().await;
             }
         }
     }
     async fn on_peer_connection_state_change(&self, state: RTCPeerConnectionState) {
-        // In keepalive mode, ignore peer disconnection - the Moonlight stream persists
-        // Only stop if a peer was previously connected and then failed
-        if self.keepalive_mode {
-            debug!("[Keepalive]: Ignoring peer state {:?} in keepalive mode", state);
-            return;
-        }
-
+        // CLEAN DISCONNECT: Always stop on peer disconnect to properly clean up Wolf session
+        // This allows RESUME to work correctly (Wolf pauses pipeline, session stays resumable)
+        // Previously we skipped this for keepalive mode, but that prevented proper cleanup
         if matches!(
             state,
             RTCPeerConnectionState::Failed
                 | RTCPeerConnectionState::Disconnected
                 | RTCPeerConnectionState::Closed
         ) {
+            info!("[Stream]: Peer disconnected, stopping stream cleanly for RESUME");
             self.stop().await;
         }
     }
@@ -852,7 +844,24 @@ impl StreamConnection {
     }
 
     async fn stop(&self) {
-        debug!("[Stream]: Stopping...");
+        info!("[Stream]: Stopping - sending cancel to Wolf for clean disconnect");
+
+        // CRITICAL: Send cancel to Wolf BEFORE dropping stream
+        // This pauses GStreamer pipeline and makes session resumable (like moonlight-qt)
+        {
+            let mut host = self.info.host.lock().await;
+            match host.cancel().await {
+                Ok(true) => {
+                    info!("[Stream]: Cancel successful - Wolf paused pipeline, session is resumable");
+                }
+                Ok(false) => {
+                    debug!("[Stream]: Cancel returned false (likely different client owns session)");
+                }
+                Err(err) => {
+                    warn!("[Stream]: Failed to cancel Wolf session: {err:?}");
+                }
+            }
+        }
 
         let mut ipc_sender = self.ipc_sender.clone();
         spawn(async move {
@@ -886,7 +895,7 @@ impl StreamConnection {
         let mut ipc_sender = self.ipc_sender.clone();
         ipc_sender.send(StreamerIpcMessage::Stop).await;
 
-        info!("Terminating Self");
+        info!("[Stream]: Terminated cleanly - session should be resumable");
         self.terminate.notify_waiters();
     }
 }
