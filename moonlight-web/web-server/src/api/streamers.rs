@@ -61,31 +61,43 @@ pub async fn create_streamer(
 ) -> HttpResponse {
     let req = request.into_inner();
 
+    info!("🚀 [Streamers API] POST /api/streamers called!");
+    info!("🚀 [Streamers API] Request: streamer_id={}, client_unique_id={}, app_id={}, {}x{}@{}fps",
+        req.streamer_id, req.client_unique_id, req.app_id, req.width, req.height, req.fps);
+
     // Check if streamer already exists
     {
         let streamers = registry.streamers.read().await;
         if streamers.contains_key(&req.streamer_id) {
+            warn!("🚀 [Streamers API] Streamer {} already exists", req.streamer_id);
             return HttpResponse::Conflict().json(serde_json::json!({
                 "error": "Streamer already exists"
             }));
         }
+        info!("🚀 [Streamers API] Streamer {} not in registry, proceeding to create", req.streamer_id);
     }
 
     // Get host info
+    info!("🚀 [Streamers API] Looking up host_id={}", req.host_id);
     let (host_address, host_http_port, client_private_key_pem, client_certificate_pem, server_certificate_pem) = {
         let hosts = data.hosts.read().await;
+        info!("🚀 [Streamers API] Total hosts available: {}", hosts.len());
         let Some(host) = hosts.get(req.host_id as usize) else {
+            warn!("🚀 [Streamers API] Host {} not found", req.host_id);
             return HttpResponse::NotFound().json(serde_json::json!({
                 "error": "Host not found"
             }));
         };
+        info!("🚀 [Streamers API] Found host {}, locking...", req.host_id);
         let mut host = host.lock().await;
         let host = &mut host.moonlight;
 
+        info!("🚀 [Streamers API] Host address: {}, checking pairing...", host.address());
         if let Some(client_private_key) = host.client_private_key()
             && let Some(client_certificate) = host.client_certificate()
             && let Some(server_certificate) = host.server_certificate()
         {
+            info!("🚀 [Streamers API] Host is paired, got certificates");
             (
                 host.address().to_string(),
                 host.http_port(),
@@ -94,11 +106,13 @@ pub async fn create_streamer(
                 server_certificate.to_string(),
             )
         } else {
+            warn!("🚀 [Streamers API] Host {} not paired!", req.host_id);
             return HttpResponse::BadRequest().json(serde_json::json!({
                 "error": "Host not paired"
             }));
         }
     };
+    info!("🚀 [Streamers API] Host info retrieved successfully");
 
     let stream_settings = StreamSettings {
         bitrate: req.bitrate,
@@ -115,6 +129,8 @@ pub async fn create_streamer(
         video_color_range_full: req.video_color_range_full,
     };
 
+    info!("🚀 [Streamers API] Spawning streamer process: {}", config.streamer_path);
+
     // Spawn streamer process
     let (mut child, stdin, stdout) = match Command::new(&config.streamer_path)
         .stdin(Stdio::piped())
@@ -124,23 +140,27 @@ pub async fn create_streamer(
         .spawn()
     {
         Ok(mut child) => {
+            info!("🚀 [Streamers API] Streamer process spawned successfully, PID will be assigned");
             if let Some(stdin) = child.stdin.take()
                 && let Some(stdout) = child.stdout.take()
             {
+                info!("🚀 [Streamers API] Got stdin/stdout from streamer process");
                 (child, stdin, stdout)
             } else {
+                warn!("🚀 [Streamers API] Failed to get stdin/stdout from streamer");
                 return HttpResponse::InternalServerError().json(serde_json::json!({
                     "error": "Failed to get streamer stdin/stdout"
                 }));
             }
         }
         Err(err) => {
-            warn!("[Streamers API]: Failed to spawn streamer: {err:?}");
+            warn!("🚀 [Streamers API] Failed to spawn streamer: {err:?}");
             return HttpResponse::InternalServerError().json(serde_json::json!({
                 "error": format!("Failed to spawn streamer: {}", err)
             }));
         }
     };
+    info!("🚀 [Streamers API] Setting up IPC channels...");
 
     // Create IPC
     let (mut ipc_sender, mut ipc_receiver) = create_child_ipc::<ServerIpcMessage, StreamerIpcMessage>(
@@ -149,8 +169,10 @@ pub async fn create_streamer(
         stdout,
         child.stderr.take(),
     ).await;
+    info!("🚀 [Streamers API] IPC channels created");
 
     // Send Init message
+    info!("🚀 [Streamers API] Sending Init IPC message to streamer...");
     ipc_sender.send(ServerIpcMessage::Init {
         server_config: Config::clone(&config),
         stream_settings,
@@ -162,9 +184,12 @@ pub async fn create_streamer(
         server_certificate_pem,
         app_id: req.app_id,
     }).await;
+    info!("🚀 [Streamers API] Init IPC sent");
 
     // Send StartMoonlight message
+    info!("🚀 [Streamers API] Sending StartMoonlight IPC message (headless mode)...");
     ipc_sender.send(ServerIpcMessage::StartMoonlight).await;
+    info!("🚀 [Streamers API] StartMoonlight IPC sent - streamer should start Moonlight now!");
 
     // Create streamer state
     let streamer_state = Arc::new(StreamerState {
@@ -179,18 +204,23 @@ pub async fn create_streamer(
     });
 
     // Store in registry
+    info!("🚀 [Streamers API] Storing streamer {} in registry", req.streamer_id);
     registry.streamers.write().await.insert(req.streamer_id.clone(), streamer_state.clone());
+    info!("🚀 [Streamers API] Streamer stored, registry now has {} streamers", registry.streamers.read().await.len());
 
     // Spawn IPC receiver task
     let streamer_state_clone = streamer_state.clone();
     let registry_clone = registry.clone();
     let streamer_id = req.streamer_id.clone();
 
+    info!("🚀 [Streamers API] Spawning IPC receiver task for streamer {}", streamer_id);
     spawn(async move {
+        info!("🔄 [Streamer {}] IPC receiver task started, waiting for messages...", streamer_id);
         while let Some(message) = ipc_receiver.recv().await {
+            info!("🔄 [Streamer {}] Received IPC message: {:?}", streamer_id, message);
             match message {
                 StreamerIpcMessage::MoonlightConnected => {
-                    info!("[Streamer {}]: Moonlight connected", streamer_id);
+                    info!("✅ [Streamer {}] MOONLIGHT CONNECTED! Stream is live headless!", streamer_id);
                     *streamer_state_clone.moonlight_connected.write().await = true;
                 }
                 StreamerIpcMessage::ToPeer { peer_id, message } => {
@@ -214,17 +244,22 @@ pub async fn create_streamer(
                     }
                 }
                 StreamerIpcMessage::Stop => {
-                    info!("[Streamer {}]: Stopped", streamer_id);
+                    info!("🛑 [Streamer {}] Received Stop IPC, exiting receiver task", streamer_id);
                     break;
                 }
-                _ => {}
+                _ => {
+                    info!("🔄 [Streamer {}] Received other IPC message (WebSocket/etc)", streamer_id);
+                }
             }
         }
 
+        info!("🛑 [Streamer {}] IPC receiver task ended, cleaning up", streamer_id);
         // Clean up when streamer stops
         registry_clone.streamers.write().await.remove(&streamer_id);
+        info!("🛑 [Streamer {}] Removed from registry", streamer_id);
     });
 
+    info!("🚀 [Streamers API] Returning 200 OK to client");
     HttpResponse::Ok().json(StreamerInfo {
         streamer_id: req.streamer_id,
         status: "active".to_string(),
