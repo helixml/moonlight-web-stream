@@ -15,7 +15,7 @@ use moonlight_common::{
     pair::ClientAuth,
     stream::{
         MoonlightInstance, MoonlightStream,
-        bindings::{ColorRange, HostFeatures},
+        bindings::{ColorRange, HostFeatures, SupportedVideoFormats},
     },
 };
 use pem::Pem;
@@ -233,6 +233,8 @@ async fn main() {
     api_registry = register_default_interceptors(api_registry, &mut api_media)
         .expect("failed to register webrtc default interceptors");
 
+    let api_settings_arc = Arc::new(api_settings.clone());
+
     let api = APIBuilder::new()
         .with_setting_engine(api_settings)
         .with_media_engine(api_media)
@@ -251,6 +253,7 @@ async fn main() {
         ipc_receiver,
         &api,
         rtc_config,
+        api_settings_arc,
     )
     .await
     .expect("failed to create connection");
@@ -297,8 +300,14 @@ struct StreamConnection {
 
     // New: Multi-peer support (Phase 1 preparation)
     pub peers: RwLock<HashMap<String, Arc<peer::WebRtcPeer>>>,
-    // Note: API is not Clone, we'll reconstruct it for new peers using stored config
     pub rtc_config: RTCConfiguration,
+
+    // For recreating API for new peers (API is not Clone)
+    pub api_settings: Arc<SettingEngine>,
+    pub supported_video_formats: SupportedVideoFormats,
+
+    // Track which peer we're currently handling (for routing responses)
+    pub current_peer_id: RwLock<Option<String>>,
 
     // Media broadcasting (Phase 2)
     pub video_broadcaster: Arc<broadcaster::VideoBroadcaster>,
@@ -328,6 +337,7 @@ impl StreamConnection {
         mut ipc_receiver: IpcReceiver<ServerIpcMessage>,
         api: &API,
         config: RTCConfiguration,
+        api_settings: Arc<SettingEngine>,
     ) -> Result<Arc<Self>, anyhow::Error> {
         // Send WebRTC Info
         ipc_sender
@@ -353,6 +363,8 @@ impl StreamConnection {
         // Create shared stream reference for input aggregator
         let stream = Arc::new(RwLock::new(None));
 
+        let supported_formats = settings.video_supported_formats;
+
         let this = Arc::new(Self {
             runtime: Handle::current(),
             moonlight,
@@ -362,6 +374,9 @@ impl StreamConnection {
             general_channel,
             peers: RwLock::new(HashMap::new()),
             rtc_config: config.clone(),
+            api_settings,
+            supported_video_formats: supported_formats,
+            current_peer_id: RwLock::new(None),
             video_broadcaster: broadcaster::VideoBroadcaster::new(),
             audio_broadcaster: broadcaster::AudioBroadcaster::new(),
             input_aggregator: input_aggregator::InputAggregator::new(stream.clone()),
@@ -417,7 +432,7 @@ impl StreamConnection {
 
             async move {
                 while let Some(message) = ipc_receiver.recv().await {
-                    match &message {
+                    match message {
                         ServerIpcMessage::Stop => {
                             this.on_ipc_message(ServerIpcMessage::Stop).await;
                             return;
@@ -430,6 +445,12 @@ impl StreamConnection {
                             } else {
                                 let mut sender = this.ipc_sender.clone();
                                 sender.send(StreamerIpcMessage::MoonlightConnected).await;
+                            }
+                        }
+                        ServerIpcMessage::AddPeer { peer_id } => {
+                            // Handle AddPeer here where we can access Arc fields
+                            if let Err(err) = this.add_peer_with_arc(peer_id).await {
+                                warn!("[IPC]: Failed to add peer: {err:?}");
                             }
                         }
                         _ => {
@@ -482,6 +503,11 @@ impl StreamConnection {
     }
 
     async fn send_answer(&self) -> bool {
+        let peer_id = self.current_peer_id.read().await.clone();
+        self.send_answer_to_peer(peer_id).await
+    }
+
+    async fn send_answer_to_peer(&self, peer_id: Option<String>) -> bool {
         let local_description = match self.peer.create_answer(None).await {
             Err(err) => {
                 warn!("[Signaling]: failed to create answer: {err:?}");
@@ -504,16 +530,21 @@ impl StreamConnection {
             local_description.sdp
         );
 
+        let message = StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+            RtcSessionDescription {
+                ty: from_webrtc_sdp(local_description.sdp_type),
+                sdp: local_description.sdp,
+            },
+        ));
+
+        // Send via ToPeer if peer_id provided, otherwise Broadcast (legacy)
         self.ipc_sender
             .clone()
-            .send(StreamerIpcMessage::WebSocket(
-                StreamServerMessage::Signaling(StreamSignalingMessage::Description(
-                    RtcSessionDescription {
-                        ty: from_webrtc_sdp(local_description.sdp_type),
-                        sdp: local_description.sdp,
-                    },
-                )),
-            ))
+            .send(if let Some(peer_id) = peer_id {
+                StreamerIpcMessage::ToPeer { peer_id, message }
+            } else {
+                StreamerIpcMessage::Broadcast(message)
+            })
             .await;
 
         true
@@ -541,16 +572,21 @@ impl StreamConnection {
             local_description.sdp
         );
 
+        let message = StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+            RtcSessionDescription {
+                ty: from_webrtc_sdp(local_description.sdp_type),
+                sdp: local_description.sdp,
+            },
+        ));
+
+        let peer_id = self.current_peer_id.read().await.clone();
         self.ipc_sender
             .clone()
-            .send(StreamerIpcMessage::WebSocket(
-                StreamServerMessage::Signaling(StreamSignalingMessage::Description(
-                    RtcSessionDescription {
-                        ty: from_webrtc_sdp(local_description.sdp_type),
-                        sdp: local_description.sdp,
-                    },
-                )),
-            ))
+            .send(if let Some(peer_id) = peer_id {
+                StreamerIpcMessage::ToPeer { peer_id, message }
+            } else {
+                StreamerIpcMessage::Broadcast(message)
+            })
             .await;
 
         true
@@ -565,11 +601,8 @@ impl StreamConnection {
             ServerIpcMessage::StartMoonlight => {
                 // Handled in IPC loop where Arc<Self> is available
             }
-            ServerIpcMessage::AddPeer { peer_id } => {
-                info!("[IPC]: Adding peer {}", peer_id);
-                if let Err(err) = self.add_peer(peer_id).await {
-                    warn!("[IPC]: Failed to add peer: {err:?}");
-                }
+            ServerIpcMessage::AddPeer { .. } => {
+                // Handled in IPC loop where Arc<Self> is available
             }
             ServerIpcMessage::FromPeer { peer_id, message } => {
                 self.on_peer_message(peer_id, message).await;
@@ -663,9 +696,14 @@ impl StreamConnection {
             },
         ));
 
+        let peer_id = self.current_peer_id.read().await.clone();
         self.ipc_sender
             .clone()
-            .send(StreamerIpcMessage::WebSocket(message))
+            .send(if let Some(peer_id) = peer_id {
+                StreamerIpcMessage::ToPeer { peer_id, message }
+            } else {
+                StreamerIpcMessage::Broadcast(message)
+            })
             .await;
     }
 
@@ -787,13 +825,72 @@ impl StreamConnection {
         Ok(())
     }
 
-    // Multi-peer management methods
-    async fn add_peer(&self, peer_id: String) -> Result<(), anyhow::Error> {
-        // For now, just log - full implementation requires recreating API
-        // This is a simplified version that acknowledges the peer
-        info!("[Peer]: Added peer {} (simplified mode)", peer_id);
+    // Multi-peer management methods (called from IPC loop with Arc<Self>)
+    async fn add_peer_with_arc(self: &Arc<Self>, peer_id: String) -> Result<(), anyhow::Error> {
+        info!("[Peer]: Creating new RTCPeerConnection for peer {}", peer_id);
 
-        // Send acknowledgment
+        // Rebuild API for this peer (API is not Clone)
+        let mut api_media = MediaEngine::default();
+        register_audio_codecs(&mut api_media)?;
+        register_video_codecs(&mut api_media, self.supported_video_formats)?;
+
+        let mut api_registry = Registry::new();
+        api_registry = register_default_interceptors(api_registry, &mut api_media)?;
+
+        let api = APIBuilder::new()
+            .with_setting_engine((*self.api_settings).clone())
+            .with_media_engine(api_media)
+            .with_interceptor_registry(api_registry)
+            .build();
+
+        // Create new RTCPeerConnection for this peer
+        let peer_connection = Arc::new(api.new_peer_connection(self.rtc_config.clone()).await?);
+
+        // Create data channel
+        let general_channel = peer_connection.create_data_channel("general", None).await?;
+
+        // Create WebRtcPeer struct
+        let webrtc_peer = peer::WebRtcPeer::new(
+            peer_id.clone(),
+            peer_connection.clone(),
+            general_channel.clone(),
+        );
+
+        // Store in peers map
+        self.peers.write().await.insert(peer_id.clone(), webrtc_peer.clone());
+
+        // Setup peer event handlers
+        let this_clone = self.clone();
+        let peer_id_clone = peer_id.clone();
+        peer_connection.on_ice_candidate(Box::new(move |candidate| {
+            let peer_id = peer_id_clone.clone();
+            let ipc_sender = this_clone.ipc_sender.clone();
+            Box::pin(async move {
+                if let Some(candidate) = candidate {
+                    if let Ok(candidate_json) = candidate.to_json() {
+                        let message = StreamServerMessage::Signaling(StreamSignalingMessage::AddIceCandidate(
+                            RtcIceCandidate {
+                                candidate: candidate_json.candidate,
+                                sdp_mid: candidate_json.sdp_mid,
+                                sdp_mline_index: candidate_json.sdp_mline_index,
+                                username_fragment: candidate_json.username_fragment,
+                            },
+                        ));
+                        let mut sender = ipc_sender.clone();
+                        sender.send(StreamerIpcMessage::ToPeer { peer_id, message }).await;
+                    }
+                }
+            })
+        }));
+
+        // Subscribe peer to broadcasters
+        let video_rx = self.video_broadcaster.subscribe(peer_id.clone()).await;
+        let audio_rx = self.audio_broadcaster.subscribe(peer_id.clone()).await;
+
+        // TODO: Spawn tasks to read from video_rx/audio_rx and write to peer tracks
+        // This is the final missing piece for true multi-peer video/audio
+
+        // Send WebRTC config to peer
         let mut sender = self.ipc_sender.clone();
         sender.send(StreamerIpcMessage::ToPeer {
             peer_id: peer_id.clone(),
@@ -802,13 +899,76 @@ impl StreamConnection {
             }
         }).await;
 
+        info!("[Peer]: Peer {} added successfully with dedicated RTCPeerConnection", peer_id);
         Ok(())
     }
 
     async fn on_peer_message(&self, peer_id: String, message: StreamClientMessage) {
         debug!("[Peer {}]: Received message", peer_id);
-        // Route to legacy handler for now
-        self.on_ws_message(message).await;
+
+        // Look up actual peer
+        let peers = self.peers.read().await;
+        let peer = peers.get(&peer_id);
+
+        if let Some(peer) = peer {
+            // Route to correct peer's RTCPeerConnection
+            match message {
+                StreamClientMessage::Signaling(StreamSignalingMessage::Description(description)) => {
+                    let description = match &description.ty {
+                        RtcSdpType::Offer => RTCSessionDescription::offer(description.sdp),
+                        RtcSdpType::Answer => RTCSessionDescription::answer(description.sdp),
+                        RtcSdpType::Pranswer => RTCSessionDescription::pranswer(description.sdp),
+                        _ => {
+                            warn!("[Peer {}]: Invalid SDP type {:?}", peer_id, description.ty);
+                            return;
+                        }
+                    };
+
+                    let Ok(description) = description else {
+                        warn!("[Peer {}]: Invalid RTCSessionDescription", peer_id);
+                        return;
+                    };
+
+                    let remote_ty = description.sdp_type;
+                    if let Err(err) = peer.connection.set_remote_description(description).await {
+                        warn!("[Peer {}]: Failed to set remote description: {err:?}", peer_id);
+                        return;
+                    }
+
+                    // If we received an offer, send answer
+                    if remote_ty == RTCSdpType::Offer {
+                        if let Ok(answer) = peer.connection.create_answer(None).await {
+                            if peer.connection.set_local_description(answer.clone()).await.is_ok() {
+                                let message = StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+                                    RtcSessionDescription {
+                                        ty: from_webrtc_sdp(answer.sdp_type),
+                                        sdp: answer.sdp,
+                                    },
+                                ));
+                                let mut sender = self.ipc_sender.clone();
+                                sender.send(StreamerIpcMessage::ToPeer {
+                                    peer_id: peer_id.clone(),
+                                    message,
+                                }).await;
+                            }
+                        }
+                    }
+                }
+                StreamClientMessage::Signaling(StreamSignalingMessage::AddIceCandidate(candidate)) => {
+                    let _ = peer.connection.add_ice_candidate(RTCIceCandidateInit {
+                        candidate: candidate.candidate,
+                        sdp_mid: candidate.sdp_mid,
+                        sdp_mline_index: candidate.sdp_mline_index,
+                        username_fragment: candidate.username_fragment,
+                    }).await;
+                }
+                StreamClientMessage::AuthenticateAndInit { .. } => {
+                    // Ignore - already authenticated
+                }
+            }
+        } else {
+            warn!("[Peer {}]: Peer not found in peers map", peer_id);
+        }
     }
 
     async fn remove_peer(&self, peer_id: &str) {
