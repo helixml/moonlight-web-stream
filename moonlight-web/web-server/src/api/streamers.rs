@@ -114,6 +114,19 @@ pub async fn create_streamer(
     };
     info!("🚀 [Streamers API] Host info retrieved successfully");
 
+    // CRITICAL: Clear host cache to force fresh app list query
+    // When Wolf creates a new app, moonlight-web doesn't know about it until cache is cleared
+    // This is what the "reload" button in the UI does
+    info!("🚀 [Streamers API] Clearing host cache to refresh app list");
+    {
+        let hosts = data.hosts.read().await;
+        if let Some(host) = hosts.get(req.host_id as usize) {
+            let mut host = host.lock().await;
+            host.moonlight.clear_cache();
+            info!("🚀 [Streamers API] Host cache cleared successfully");
+        }
+    }
+
     let stream_settings = StreamSettings {
         bitrate: req.bitrate,
         packet_size: req.packet_size,

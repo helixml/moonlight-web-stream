@@ -65,8 +65,8 @@ WORKDIR /app
 COPY --from=builder /tmp/web-server /app/web-server
 COPY --from=builder /tmp/streamer /app/streamer
 
-# Copy web assets
-COPY --from=builder /build/moonlight-web/web-server/dist /app/static
+# Copy web assets (use 'dist' for debug builds, 'static' for release builds - see web.rs)
+COPY --from=builder /build/moonlight-web/web-server/dist /app/dist
 
 # Create config directory
 RUN mkdir -p /server
