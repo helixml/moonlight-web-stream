@@ -184,27 +184,7 @@ pub async fn create_streamer(
     ).await;
     info!("🚀 [Streamers API] IPC channels created");
 
-    // Send Init message
-    info!("🚀 [Streamers API] Sending Init IPC message to streamer...");
-    ipc_sender.send(ServerIpcMessage::Init {
-        server_config: Config::clone(&config),
-        stream_settings,
-        host_address,
-        host_http_port,
-        host_unique_id: Some(req.client_unique_id),
-        client_private_key_pem,
-        client_certificate_pem,
-        server_certificate_pem,
-        app_id: req.app_id,
-    }).await;
-    info!("🚀 [Streamers API] Init IPC sent");
-
-    // Send StartMoonlight message
-    info!("🚀 [Streamers API] Sending StartMoonlight IPC message (headless mode)...");
-    ipc_sender.send(ServerIpcMessage::StartMoonlight).await;
-    info!("🚀 [Streamers API] StartMoonlight IPC sent - streamer should start Moonlight now!");
-
-    // Create streamer state
+    // Create streamer state (with IPC sender for receiver task to use)
     let streamer_state = Arc::new(StreamerState {
         streamer_id: req.streamer_id.clone(),
         created_at: SystemTime::now(),
@@ -221,7 +201,8 @@ pub async fn create_streamer(
     registry.streamers.write().await.insert(req.streamer_id.clone(), streamer_state.clone());
     info!("🚀 [Streamers API] Streamer stored, registry now has {} streamers", registry.streamers.read().await.len());
 
-    // Spawn IPC receiver task
+    // CRITICAL: Spawn IPC receiver task BEFORE sending any messages
+    // The streamer sends messages immediately on startup, so we need to be listening
     let streamer_state_clone = streamer_state.clone();
     let registry_clone = registry.clone();
     let streamer_id = req.streamer_id.clone();
@@ -271,6 +252,32 @@ pub async fn create_streamer(
         registry_clone.streamers.write().await.remove(&streamer_id);
         info!("🛑 [Streamer {}] Removed from registry", streamer_id);
     });
+
+    // NOW send Init and StartMoonlight messages (after receiver is listening)
+    info!("🚀 [Streamers API] Sending Init IPC message to streamer...");
+    {
+        let mut sender = streamer_state.ipc_sender.lock().await;
+        sender.send(ServerIpcMessage::Init {
+            server_config: Config::clone(&config),
+            stream_settings,
+            host_address,
+            host_http_port,
+            host_unique_id: Some(req.client_unique_id),
+            client_private_key_pem,
+            client_certificate_pem,
+            server_certificate_pem,
+            app_id: req.app_id,
+        }).await;
+    }
+    info!("🚀 [Streamers API] Init IPC sent");
+
+    // Send StartMoonlight message
+    info!("🚀 [Streamers API] Sending StartMoonlight IPC message (headless mode)...");
+    {
+        let mut sender = streamer_state.ipc_sender.lock().await;
+        sender.send(ServerIpcMessage::StartMoonlight).await;
+    }
+    info!("🚀 [Streamers API] StartMoonlight IPC sent - streamer should start Moonlight now!");
 
     info!("🚀 [Streamers API] Returning 200 OK to client");
     HttpResponse::Ok().json(StreamerInfo {
