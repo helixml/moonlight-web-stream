@@ -305,6 +305,8 @@ struct StreamConnection {
     pub terminate: Notify,
     // Keepalive mode: WebRTC peer is optional, only Moonlight stream matters
     pub keepalive_mode: bool,
+    // Track if stop already called (idempotency)
+    pub stopped: Mutex<bool>,
 }
 
 impl StreamConnection {
@@ -352,6 +354,7 @@ impl StreamConnection {
             stream: Default::default(),
             terminate: Notify::new(),
             keepalive_mode,
+            stopped: Mutex::new(false),
         });
 
         // -- Connection state
@@ -844,6 +847,16 @@ impl StreamConnection {
     }
 
     async fn stop(&self) {
+        // Check if already stopped (idempotency - can be called from WebSocket close AND peer disconnect)
+        {
+            let mut stopped = self.stopped.lock().await;
+            if *stopped {
+                debug!("[Stream]: stop() already called, skipping");
+                return;
+            }
+            *stopped = true;
+        }
+
         info!("[Stream]: Stopping - sending cancel to Wolf for clean disconnect");
 
         // CRITICAL: Send cancel to Wolf BEFORE dropping stream
