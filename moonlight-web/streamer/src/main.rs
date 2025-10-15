@@ -857,24 +857,12 @@ impl StreamConnection {
             *stopped = true;
         }
 
-        info!("[Stream]: Stopping - sending cancel to Wolf for clean disconnect");
+        info!("[Stream]: Stopping - cleanly dropping stream (Wolf will auto-pause)");
 
-        // CRITICAL: Send cancel to Wolf BEFORE dropping stream
-        // This pauses GStreamer pipeline and makes session resumable (like moonlight-qt)
-        {
-            let mut host = self.info.host.lock().await;
-            match host.cancel().await {
-                Ok(true) => {
-                    info!("[Stream]: Cancel successful - Wolf paused pipeline, session is resumable");
-                }
-                Ok(false) => {
-                    debug!("[Stream]: Cancel returned false (likely different client owns session)");
-                }
-                Err(err) => {
-                    warn!("[Stream]: Failed to cancel Wolf session: {err:?}");
-                }
-            }
-        }
+        // DON'T call cancel() - that fires StopStreamEvent and removes session!
+        // Instead, just drop the MoonlightStream cleanly.
+        // Wolf detects RTSP connection close and pauses pipeline automatically.
+        // This is what moonlight-qt does - no explicit cancel needed!
 
         let mut ipc_sender = self.ipc_sender.clone();
         spawn(async move {
