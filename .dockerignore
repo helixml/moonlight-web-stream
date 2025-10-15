@@ -1,0 +1,26 @@
+# Rust build artifacts - no point copying to build context
+target/
+**/target/
+
+# Node modules - rebuilt in container anyway
+node_modules/
+**/node_modules/
+
+# Git directory - not needed for build
+.git/
+.gitignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build logs and temp files
+*.log
+*.tmp

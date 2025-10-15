@@ -1,12 +1,16 @@
 # Multi-stage build for moonlight-web-stream
 FROM rust:latest as builder
 
+# Build mode: debug or release (default: debug)
+ARG BUILD_MODE=debug
+
 # Install Rust nightly (required by moonlight-web-stream)
 RUN rustup default nightly
 
-# Install ALL build dependencies upfront (including nodejs/npm)
-# This layer is cached and only rebuilt when dependencies change
+# Install build dependencies (including nodejs/npm for frontend build)
 RUN apt-get update && apt-get install -y \
+    procps \
+    curl \
     cmake \
     libssl-dev \
     pkg-config \
@@ -16,17 +20,30 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
+# CRITICAL: Tell openssl-sys to use system OpenSSL instead of building from source
+# This prevents slow perl-based OpenSSL compilation (no more perl processes!)
+ENV OPENSSL_NO_VENDOR=1
+ENV OPENSSL_DIR=/usr
+ENV OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu
+ENV OPENSSL_INCLUDE_DIR=/usr/include
+
 WORKDIR /build
 
 # Copy source code
 COPY . .
 
-# Build the release binary with cargo cache
+# Build the binary with cargo cache (debug or release based on BUILD_MODE)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
-    cargo build --release && \
-    cp /build/target/release/web-server /tmp/web-server && \
-    cp /build/target/release/streamer /tmp/streamer
+    if [ "$BUILD_MODE" = "debug" ]; then \
+        cargo build && \
+        cp /build/target/debug/web-server /tmp/web-server && \
+        cp /build/target/debug/streamer /tmp/streamer; \
+    else \
+        cargo build --release && \
+        cp /build/target/release/web-server /tmp/web-server && \
+        cp /build/target/release/streamer /tmp/streamer; \
+    fi
 
 # Build web frontend
 WORKDIR /build/moonlight-web/web-server
@@ -50,8 +67,8 @@ WORKDIR /app
 COPY --from=builder /tmp/web-server /app/web-server
 COPY --from=builder /tmp/streamer /app/streamer
 
-# Copy web assets
-COPY --from=builder /build/moonlight-web/web-server/dist /app/static
+# Copy web assets (use 'dist' for debug builds, 'static' for release builds - see web.rs)
+COPY --from=builder /build/moonlight-web/web-server/dist /app/dist
 
 # Create config directory
 RUN mkdir -p /server
