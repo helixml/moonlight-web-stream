@@ -175,15 +175,8 @@ pub async fn start_host(
             video_color_range_full,
         };
 
-        // Collect host data
-        let (
-            host_address,
-            host_http_port,
-            client_private_key_pem,
-            client_certificate_pem,
-            server_certificate_pem,
-            app,
-        ) = {
+        // Get host info and generate UNIQUE pairing credentials per session
+        let (host_address, host_http_port, server_certificate_pem, app) = {
             let hosts = data.hosts.read().await;
             let Some(host) = hosts.get(host_id as usize) else {
                 let _ = send_ws_message(&mut session, StreamServerMessage::HostNotFound).await;
@@ -229,28 +222,82 @@ pub async fn start_host(
                 return;
             };
 
-            if let Some(client_private_key) = host.client_private_key()
-                && let Some(client_certificate) = host.client_certificate()
-                && let Some(server_certificate) = host.server_certificate()
-            {
+            if let Some(server_certificate) = host.server_certificate() {
                 (
                     host.address().to_string(),
                     host.http_port(),
-                    client_private_key.to_string(),
-                    client_certificate.to_string(),
                     server_certificate.to_string(),
                     app,
                 )
             } else {
-                warn!("[Stream]: Missing certificates - private_key={}, client_cert={}, server_cert={}",
-                    host.client_private_key().is_some(),
-                    host.client_certificate().is_some(),
-                    host.server_certificate().is_some());
+                warn!("[Stream]: Missing server certificate");
                 let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
                 let _ = session.close(None).await;
                 return;
             }
         };
+
+        // CRITICAL: Generate UNIQUE pairing credentials for this session
+        // Wolf identifies clients by certificate hash - shared certs = same client_id = session conflicts
+        info!("[Stream]: Generating unique pairing credentials for session {}", session_id);
+        use moonlight_common::pair::generate_new_client;
+        use moonlight_common::PairPin;
+        use moonlight_common::network::reqwest::ReqwestMoonlightHost;
+
+        let client_auth = match generate_new_client() {
+            Ok(auth) => auth,
+            Err(err) => {
+                warn!("[Stream]: Failed to generate client credentials: {:?}", err);
+                let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+                let _ = session.close(None).await;
+                return;
+            }
+        };
+
+        let client_private_key_pem = client_auth.private_key.to_string();
+        let client_certificate_pem = client_auth.certificate.to_string();
+
+        info!("[Stream]: Generated unique client credentials, now auto-pairing...");
+
+        // Auto-pair using internal PIN
+        let pin = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN")
+            .ok()
+            .and_then(|pin_str| {
+                if pin_str.len() == 4 && pin_str.chars().all(|c| c.is_ascii_digit()) {
+                    let digits: Vec<u8> = pin_str.chars().map(|c| c.to_digit(10).unwrap() as u8).collect();
+                    PairPin::from_array([digits[0], digits[1], digits[2], digits[3]])
+                } else {
+                    None
+                }
+            });
+
+        let Some(pin) = pin else {
+            warn!("[Stream]: MOONLIGHT_INTERNAL_PAIRING_PIN not configured or invalid");
+            let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+            let _ = session.close(None).await;
+            return;
+        };
+
+        // Create temporary host to pair
+        let mut temp_host = match ReqwestMoonlightHost::new(host_address.clone(), host_http_port, None) {
+            Ok(h) => h,
+            Err(err) => {
+                warn!("[Stream]: Failed to create temp host: {:?}", err);
+                let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+                let _ = session.close(None).await;
+                return;
+            }
+        };
+
+        // Pair with unique credentials
+        if let Err(err) = temp_host.pair(&client_auth, format!("session-{}", session_id), pin).await {
+            warn!("[Stream]: Auto-pairing failed: {:?}", err);
+            let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
+            let _ = session.close(None).await;
+            return;
+        }
+
+        info!("[Stream]: Auto-pairing successful with unique credentials for session {}!", session_id);
 
         // Send App info
         let _ = send_ws_message(
