@@ -21,7 +21,7 @@ use webrtc::{
         receiver_estimated_maximum_bitrate::ReceiverEstimatedMaximumBitrate,
     },
     rtp::{
-        codecs::{av1::Av1Payloader, h264::H264Payloader, h265::RTP_OUTBOUND_MTU},
+        codecs::{av1::Av1Payloader, h265::RTP_OUTBOUND_MTU},
         header::Header,
         packet::Packet,
         packetizer::Payloader,
@@ -38,7 +38,7 @@ use crate::{
     sender::{SequencedTrackLocalStaticRTP, TrackLocalSender},
     video::{
         annexb::AnnexBSplitter,
-        h264::H264Reader,
+        h264::{payloader::H264Payloader, reader::H264Reader},
         h265::{payloader::H265Payloader, reader::H265Reader},
     },
 };

@@ -1,16 +1,16 @@
 //! Specifications:
 //! - https://datatracker.ietf.org/doc/html/rfc3984
 
-use std::{
-    io::{self, Read},
-    ops::Range,
-};
+use std::ops::Range;
 
 use bytes::BytesMut;
 use num::FromPrimitive;
 use num_derive::FromPrimitive;
 
-use crate::video::annexb::{AnnexBSplitter, AnnexBStartCode};
+use crate::video::annexb::AnnexBStartCode;
+
+pub mod payloader;
+pub mod reader;
 
 #[allow(unused)]
 pub struct Nal {
@@ -50,16 +50,17 @@ pub enum NalUnitType {
     CodedSliceExtDepth = 21,
     Reserved22 = 22,
     Reserved23 = 23,
-    Unspecified24 = 24,
+    StapA = 24,
     Unspecified25 = 25,
     Unspecified26 = 26,
     Unspecified27 = 27,
-    Unspecified28 = 28,
+    FragmentationUnit = 28,
     Unspecified29 = 29,
     Unspecified30 = 30,
     Unspecified31 = 31,
 }
 
+// https://datatracker.ietf.org/doc/html/rfc3984#section-1.3
 #[allow(unused)]
 #[derive(Debug, Clone, Copy)]
 pub struct NalHeader {
@@ -69,7 +70,9 @@ pub struct NalHeader {
 }
 
 impl NalHeader {
-    fn parse(header: [u8; 1]) -> Self {
+    pub const SIZE: usize = 1;
+
+    pub fn parse(header: [u8; 1]) -> Self {
         // F: 1 bit
         let forbidden_zero_bit = ((header[0] & 0b10000000) >> 7) == 1;
 
@@ -86,55 +89,21 @@ impl NalHeader {
             nal_unit_type: NalUnitType::from_u8(nal_unit_type).unwrap(),
         }
     }
-}
 
-// https://datatracker.ietf.org/doc/html/rfc3984#section-1.3
-pub struct H264Reader<R: Read> {
-    annex_b: AnnexBSplitter<R>,
-}
+    pub fn serialize(&self) -> [u8; 1] {
+        let mut header = [0u8; 1];
 
-impl<R> H264Reader<R>
-where
-    R: Read,
-{
-    pub fn new(reader: R, capacity: usize) -> Self {
-        Self {
-            annex_b: AnnexBSplitter::new(reader, capacity),
+        // F: Forbidden zero bit (bit 7)
+        if self.forbidden_zero_bit {
+            header[0] |= 0b1000_0000;
         }
-    }
 
-    pub fn next_nal(&mut self) -> Result<Option<Nal>, io::Error> {
-        loop {
-            if let Some(annex_b) = self.annex_b.next()? {
-                let header_range = annex_b.payload_range.start..(annex_b.payload_range.start + 1);
+        // NRI: 2 bits (bits 6–5)
+        header[0] |= (self.nal_ref_idc & 0b11) << 5;
 
-                let mut header = [0u8; 1];
-                header.copy_from_slice(&annex_b.full[header_range.clone()]);
-                let header = NalHeader::parse(header);
+        // Type: 5 bits (bits 4–0)
+        header[0] |= (self.nal_unit_type as u8) & 0b0001_1111;
 
-                // Don't skip SEI - it contains critical color metadata!
-                // Skipping SEI causes color reproduction issues (flickering, wrong colors)
-                // if header.nal_unit_type == NalUnitType::Sei {
-                //     continue;
-                // }
-
-                let payload_range = header_range.end..annex_b.payload_range.end;
-
-                return Ok(Some(Nal {
-                    payload_range,
-                    header,
-                    header_range,
-                    start_code: annex_b.start_code,
-                    start_code_range: annex_b.start_code_range,
-                    full: annex_b.full,
-                }));
-            } else {
-                return Ok(None);
-            }
-        }
-    }
-
-    pub fn reset(&mut self, new_reader: R) {
-        self.annex_b.reset(new_reader);
+        header
     }
 }
