@@ -417,12 +417,25 @@ impl StreamConnection {
 
             async move {
                 while let Some(message) = ipc_receiver.recv().await {
-                    if let ServerIpcMessage::Stop = &message {
-                        this.on_ipc_message(ServerIpcMessage::Stop).await;
-                        return;
+                    match &message {
+                        ServerIpcMessage::Stop => {
+                            this.on_ipc_message(ServerIpcMessage::Stop).await;
+                            return;
+                        }
+                        ServerIpcMessage::StartMoonlight => {
+                            // Handle StartMoonlight here where we have Arc<Self>
+                            info!("[IPC]: Starting Moonlight stream (headless mode)");
+                            if let Err(err) = this.start_stream().await {
+                                warn!("[IPC]: Failed to start Moonlight: {err:?}");
+                            } else {
+                                let mut sender = this.ipc_sender.clone();
+                                sender.send(StreamerIpcMessage::MoonlightConnected).await;
+                            }
+                        }
+                        _ => {
+                            this.on_ipc_message(message).await;
+                        }
                     }
-
-                    this.on_ipc_message(message).await;
                 }
             }
         });
@@ -550,10 +563,7 @@ impl StreamConnection {
                 self.on_ws_message(message).await;
             }
             ServerIpcMessage::StartMoonlight => {
-                info!("[IPC]: StartMoonlight not yet supported in legacy mode");
-                // Note: start_stream requires Arc<Self>, not available in this context
-                // This will be properly implemented when full multi-peer is complete
-                warn!("[IPC]: StartMoonlight requires full multi-peer implementation");
+                // Handled in IPC loop where Arc<Self> is available
             }
             ServerIpcMessage::AddPeer { peer_id } => {
                 info!("[IPC]: Adding peer {}", peer_id);
