@@ -426,7 +426,7 @@ async fn get_app_image(
     }
 }
 
-pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl HttpServiceFactory {
+pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data<Config>) -> impl HttpServiceFactory {
     // Create streamer registry
     let streamer_registry = streamers::StreamerRegistry::new();
 
@@ -434,28 +434,25 @@ pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl Http
         .wrap(middleware::from_fn(auth_middleware))
         .app_data(ApiCredentials(credentials))
         .app_data(data)
+        .app_data(config) // Add Config to scope
         .app_data(Data::new(streamer_registry))
-        .service(services![
-            authenticate,
-            stream::start_host,
-            stream::cancel_host,
-            list_hosts,
-            get_host,
-            put_host,
-            wake_host,
-            delete_host,
-            pair_host,
-            get_apps,
-            get_app_image,
-        ])
-        .service(services![
-            // New streamer endpoints (Phase 4-5)
-            streamers::create_streamer,
-            streamers::list_streamers,
-            streamers::get_streamer,
-            streamers::delete_streamer,
-            streamers::connect_peer,
-        ])
+        .service(authenticate)
+        .service(stream::start_host)
+        .service(stream::cancel_host)
+        .service(list_hosts)
+        .service(get_host)
+        .service(put_host)
+        .service(wake_host)
+        .service(delete_host)
+        .service(pair_host)
+        .service(get_apps)
+        .service(get_app_image)
+        // New streamer endpoints
+        .service(streamers::create_streamer)
+        .service(streamers::list_streamers)
+        .service(streamers::get_streamer)
+        .service(streamers::delete_streamer)
+        .service(streamers::connect_peer)
 }
 
 async fn into_undetailed_host(

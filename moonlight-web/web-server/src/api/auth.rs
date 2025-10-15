@@ -19,6 +19,11 @@ pub async fn auth_middleware(
         return next.call(req).await;
     }
 
+    // WebSocket peer endpoint also bypasses auth middleware (authenticated at websocket level)
+    if req.uri().path().starts_with("/api/streamers/") && req.uri().path().ends_with("/peer") {
+        return next.call(req).await;
+    }
+
     if authenticate(&req) {
         next.call(req).await
     } else {
