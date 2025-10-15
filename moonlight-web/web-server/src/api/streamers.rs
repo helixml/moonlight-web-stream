@@ -207,7 +207,7 @@ pub async fn create_streamer(
     let registry_clone = registry.clone();
     let streamer_id = req.streamer_id.clone();
 
-    info!("🚀 [Streamers API] Spawning IPC receiver task for streamer {}", streamer_id);
+    info!("🔧 [FIXED CODE v2] Spawning IPC receiver task BEFORE sending Init/StartMoonlight for streamer {}", streamer_id);
     spawn(async move {
         info!("🔄 [Streamer {}] IPC receiver task started, waiting for messages...", streamer_id);
         while let Some(message) = ipc_receiver.recv().await {

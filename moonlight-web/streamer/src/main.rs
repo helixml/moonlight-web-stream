@@ -78,11 +78,14 @@ mod video;
 
 #[tokio::main]
 async fn main() {
+    eprintln!("🎬 [Streamer] STARTING UP - main() entry point");
+
     #[cfg(debug_assertions)]
     let log_level = LevelFilter::Debug;
     #[cfg(not(debug_assertions))]
     let log_level = LevelFilter::Info;
 
+    eprintln!("🎬 [Streamer] Initializing logger...");
     TermLogger::init(
         log_level,
         simplelog::Config::default(),
@@ -90,18 +93,25 @@ async fn main() {
         ColorChoice::Auto,
     )
     .expect("failed to init logger");
+    eprintln!("🎬 [Streamer] Logger initialized");
 
+    eprintln!("🎬 [Streamer] Setting up panic hook...");
     let default_panic = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        eprintln!("💥 [Streamer] PANIC: {:?}", info);
         default_panic(info);
         exit(0);
     }));
+    eprintln!("🎬 [Streamer] Panic hook set");
 
     // At this point we're authenticated
+    eprintln!("🎬 [Streamer] Creating IPC channels with stdin/stdout...");
     let (mut ipc_sender, mut ipc_receiver) =
         create_process_ipc::<ServerIpcMessage, StreamerIpcMessage>(stdin(), stdout()).await;
+    eprintln!("🎬 [Streamer] IPC channels created successfully");
 
     // Send stage
+    eprintln!("🎬 [Streamer] Sending StageComplete message...");
     ipc_sender
         .send(StreamerIpcMessage::WebSocket(
             StreamServerMessage::StageComplete {
@@ -109,6 +119,7 @@ async fn main() {
             },
         ))
         .await;
+    eprintln!("🎬 [Streamer] StageComplete sent, now waiting for Init message...");
 
     let (
         server_config,
@@ -121,6 +132,7 @@ async fn main() {
         server_certificate_pem,
         app_id,
     ) = loop {
+        eprintln!("🎬 [Streamer] Calling ipc_receiver.recv()...");
         match ipc_receiver.recv().await {
             Some(ServerIpcMessage::Init {
                 server_config,
@@ -133,6 +145,7 @@ async fn main() {
                 server_certificate_pem,
                 app_id,
             }) => {
+                eprintln!("🎬 [Streamer] Received Init message!");
                 debug!(
                     "Client supported codecs: {:?}",
                     stream_settings
@@ -140,6 +153,7 @@ async fn main() {
                         .iter_names()
                         .collect::<Vec<_>>()
                 );
+                eprintln!("🎬 [Streamer] Breaking out of Init wait loop...");
 
                 break (
                     server_config,
@@ -153,11 +167,20 @@ async fn main() {
                     app_id,
                 );
             }
-            _ => continue,
+            None => {
+                eprintln!("🎬 [Streamer] ERROR: recv() returned None - parent closed stdin!");
+                continue;
+            }
+            _ => {
+                eprintln!("🎬 [Streamer] Received non-Init message, continuing loop...");
+                continue;
+            }
         }
     };
+    eprintln!("🎬 [Streamer] Init received and processed, continuing to WebRTC setup...");
 
     // Send stage
+    eprintln!("🎬 [Streamer] Sending StageStarting message...");
     ipc_sender
         .send(StreamerIpcMessage::WebSocket(
             StreamServerMessage::StageStarting {
@@ -165,11 +188,15 @@ async fn main() {
             },
         ))
         .await;
+    eprintln!("🎬 [Streamer] StageStarting sent");
 
     // -- Create the host and pair it
-    let mut host = ReqwestMoonlightHost::new(host_address, host_http_port, host_unique_id)
-        .expect("failed to create host");
+    eprintln!("🎬 [Streamer] Creating ReqwestMoonlightHost with address={}, port={}", host_address, host_http_port);
+    let mut host = ReqwestMoonlightHost::new(host_address.clone(), host_http_port, host_unique_id)
+        .expect(&format!("failed to create host at {}:{}", host_address, host_http_port));
+    eprintln!("🎬 [Streamer] ReqwestMoonlightHost created");
 
+    eprintln!("🎬 [Streamer] Setting pairing info...");
     host.set_pairing_info(
         &ClientAuth {
             private_key: Pem::from_str(&client_private_key_pem)
@@ -180,9 +207,12 @@ async fn main() {
         &Pem::from_str(&server_certificate_pem).expect("failed to parse server certificate"),
     )
     .expect("failed to set pairing info");
+    eprintln!("🎬 [Streamer] Pairing info set");
 
     // -- Configure moonlight
+    eprintln!("🎬 [Streamer] Getting MoonlightInstance...");
     let moonlight = MoonlightInstance::global().expect("failed to find moonlight");
+    eprintln!("🎬 [Streamer] MoonlightInstance obtained");
 
     // -- Configure WebRTC
     let rtc_config = RTCConfiguration {
@@ -236,13 +266,16 @@ async fn main() {
 
     let api_settings_arc = Arc::new(api_settings.clone());
 
+    eprintln!("🎬 [Streamer] Building WebRTC API...");
     let api = APIBuilder::new()
         .with_setting_engine(api_settings)
         .with_media_engine(api_media)
         .with_interceptor_registry(api_registry)
         .build();
+    eprintln!("🎬 [Streamer] WebRTC API built");
 
     // -- Create and Configure Peer
+    eprintln!("🎬 [Streamer] Creating StreamConnection...");
     let connection = StreamConnection::new(
         moonlight,
         StreamInfo {
@@ -258,8 +291,10 @@ async fn main() {
     )
     .await
     .expect("failed to create connection");
+    eprintln!("🎬 [Streamer] StreamConnection created successfully!");
 
     // Send stage
+    eprintln!("🎬 [Streamer] Sending StageComplete (Setup WebRTC Peer)...");
     ipc_sender
         .send(StreamerIpcMessage::WebSocket(
             StreamServerMessage::StageComplete {
@@ -269,6 +304,7 @@ async fn main() {
         .await;
 
     // Send stage
+    eprintln!("🎬 [Streamer] Sending StageStarting (WebRTC Peer Negotiation)...");
     ipc_sender
         .send(StreamerIpcMessage::WebSocket(
             StreamServerMessage::StageStarting {
@@ -276,10 +312,12 @@ async fn main() {
             },
         ))
         .await;
+    eprintln!("🎬 [Streamer] All initialization complete, waiting for termination signal...");
 
     // Wait for termination
     connection.terminate.notified().await;
 
+    eprintln!("🎬 [Streamer] Termination signal received, exiting...");
     // Exit streamer
     exit(0);
 }
