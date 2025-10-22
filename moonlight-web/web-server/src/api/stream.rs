@@ -265,7 +265,12 @@ pub async fn start_host(
                 // Cache for future sessions with same client_unique_id
                 let mut cache = data.client_certificates.write().await;
                 cache.insert(unique_id.clone(), auth.clone());
+                drop(cache); // Release write lock before triggering save
                 info!("[Stream]: Generated and cached new certificate for client_unique_id '{}'", unique_id);
+
+                // Trigger persistence to data.json
+                let _ = data.file_writer.try_send(());
+
                 auth
             }
         } else {

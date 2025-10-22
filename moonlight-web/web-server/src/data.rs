@@ -26,6 +26,8 @@ use crate::Config;
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ApiData {
     hosts: Vec<Host>,
+    #[serde(default)]
+    client_certificates: HashMap<String, SerializableClientAuth>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,6 +45,12 @@ pub struct PairedHost {
     pub client_private_key: String,
     pub client_certificate: String,
     pub server_certificate: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SerializableClientAuth {
+    pub private_key: String,
+    pub certificate: String,
 }
 
 pub struct RuntimeApiHost {
@@ -137,11 +145,34 @@ impl RuntimeApiData {
         // -> no extra write operations
         let (file_writer, file_writer_receiver) = channel(1);
 
+        // Load persisted client certificates
+        let mut client_certs = HashMap::new();
+        for (client_unique_id, serializable_auth) in data.client_certificates.into_iter() {
+            match (
+                pem::parse(&serializable_auth.private_key),
+                pem::parse(&serializable_auth.certificate),
+            ) {
+                (Ok(private_key), Ok(certificate)) => {
+                    client_certs.insert(
+                        client_unique_id.clone(),
+                        ClientAuth {
+                            private_key,
+                            certificate,
+                        },
+                    );
+                    info!("Loaded persisted certificate for client_unique_id: {}", client_unique_id);
+                }
+                _ => {
+                    warn!("Failed to parse persisted certificate for client_unique_id: {}", client_unique_id);
+                }
+            }
+        }
+
         let this = Data::new(Self {
             file_writer,
             hosts: RwLock::new(hosts),
             sessions: RwLock::new(HashMap::new()),  // NEW: initialize empty sessions map
-            client_certificates: RwLock::new(HashMap::new()),  // KICKOFF: initialize empty certificate cache
+            client_certificates: RwLock::new(client_certs),  // KICKOFF: load persisted certificate cache
         });
 
         spawn({
@@ -160,6 +191,7 @@ impl RuntimeApiData {
 
         let mut output = ApiData {
             hosts: Vec::with_capacity(hosts.len()),
+            client_certificates: HashMap::new(),
         };
 
         for (_, host) in &*hosts {
@@ -174,6 +206,18 @@ impl RuntimeApiData {
                 cache: host.cache.clone(),
                 paired,
             });
+        }
+
+        // Save client certificates for persistence across restarts
+        let certs = self.client_certificates.read().await;
+        for (client_unique_id, client_auth) in certs.iter() {
+            output.client_certificates.insert(
+                client_unique_id.clone(),
+                SerializableClientAuth {
+                    private_key: pem::encode(&client_auth.private_key),
+                    certificate: pem::encode(&client_auth.certificate),
+                },
+            );
         }
 
         output
