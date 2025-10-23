@@ -308,25 +308,7 @@ pub async fn start_host(
             return;
         };
 
-        // DEFENSIVE: Try to unpair stale pairing state using a SEPARATE host object
-        // This prevents corrupting the main temp_host used for pairing
-        if let Ok(server_cert) = pem::parse(&server_certificate_pem) {
-            if let Ok(mut unpair_host) = ReqwestMoonlightHost::new(host_address.clone(), host_http_port, None) {
-                if let Ok(_) = unpair_host.set_pairing_info(&client_auth, &server_cert) {
-                    match unpair_host.unpair().await {
-                        Ok(_) => {
-                            info!("[Stream]: Successfully unpaired stale client for session {} - will re-pair fresh", session_id);
-                        }
-                        Err(err) => {
-                            // Expected if not previously paired - not an error
-                            debug!("[Stream]: Unpair returned error (expected if not paired): {:?}", err);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Create temporary host to pair (FRESH, not used for unpair)
+        // Create temporary host to pair
         let mut temp_host = match ReqwestMoonlightHost::new(host_address.clone(), host_http_port, None) {
             Ok(h) => h,
             Err(err) => {
