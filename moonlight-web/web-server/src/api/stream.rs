@@ -319,7 +319,24 @@ pub async fn start_host(
             }
         };
 
-        // Pair with unique credentials
+        // DEFENSIVE: First set pairing info to check if already paired
+        // This allows unpair() to work if there's stale pairing state
+        if let Ok(server_cert) = pem::parse(&server_certificate_pem) {
+            if let Ok(_) = temp_host.set_pairing_info(&client_auth, &server_cert) {
+                // Try to unpair first to clear any stale state (ignore error if not paired)
+                match temp_host.unpair().await {
+                    Ok(_) => {
+                        info!("[Stream]: Successfully unpaired stale client for session {} - will re-pair fresh", session_id);
+                    }
+                    Err(err) => {
+                        // Expected if not previously paired - not an error
+                        debug!("[Stream]: Unpair returned error (expected if not paired): {:?}", err);
+                    }
+                }
+            }
+        }
+
+        // Pair with unique credentials (fresh pairing every time)
         if let Err(err) = temp_host.pair(&client_auth, format!("session-{}", session_id), pin).await {
             warn!("[Stream]: Auto-pairing failed: {:?}", err);
             let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;
