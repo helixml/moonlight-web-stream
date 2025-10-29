@@ -462,11 +462,12 @@ async fn get_sessions(
     Either::Left(Json(GetSessionsResponse { sessions }))
 }
 
-pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl HttpServiceFactory {
+pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data<Config>) -> impl HttpServiceFactory {
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))
         .app_data(ApiCredentials(credentials))
         .app_data(data)
+        .app_data(config)  // Add Config to scope so pair_host and other endpoints can extract it
         .service(services![
             authenticate,
             stream::start_host,
