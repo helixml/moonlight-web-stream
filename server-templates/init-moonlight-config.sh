@@ -20,6 +20,19 @@ fi
 if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
     echo "🔧 Initializing moonlight-web config.json from template..."
 
+    # Validate required credentials are set (no insecure defaults!)
+    if [ -z "$MOONLIGHT_CREDENTIALS" ]; then
+        echo "❌ ERROR: MOONLIGHT_CREDENTIALS environment variable is required but not set."
+        echo "This should be set by install.sh or docker-compose environment."
+        exit 1
+    fi
+
+    if [ -z "$TURN_PASSWORD" ]; then
+        echo "❌ ERROR: TURN_PASSWORD environment variable is required but not set."
+        echo "This should be set by install.sh or docker-compose environment."
+        exit 1
+    fi
+
     # Auto-detect public IP if TURN_PUBLIC_IP not set
     if [ -z "$TURN_PUBLIC_IP" ]; then
         echo "⏳ Auto-detecting public IP for TURN server..."
@@ -35,8 +48,11 @@ if [ ! -f "$CONFIG_FILE" ] || [ ! -s "$CONFIG_FILE" ]; then
         echo "✅ Using configured TURN_PUBLIC_IP: $TURN_PUBLIC_IP"
     fi
 
-    # Substitute {{TURN_PUBLIC_IP}} in template
-    sed "s/{{TURN_PUBLIC_IP}}/$TURN_PUBLIC_IP/g" "$CONFIG_TEMPLATE" > "$CONFIG_FILE"
+    # Substitute all template variables
+    sed -e "s/{{TURN_PUBLIC_IP}}/$TURN_PUBLIC_IP/g" \
+        -e "s/{{MOONLIGHT_CREDENTIALS}}/$MOONLIGHT_CREDENTIALS/g" \
+        -e "s/{{TURN_PASSWORD}}/$TURN_PASSWORD/g" \
+        "$CONFIG_TEMPLATE" > "$CONFIG_FILE"
     echo "✅ moonlight-web config.json initialized with TURN server at $TURN_PUBLIC_IP"
 else
     echo "ℹ️  moonlight-web config.json already exists, skipping initialization"
