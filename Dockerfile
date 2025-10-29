@@ -58,6 +58,7 @@ FROM debian:sid-slim
 RUN apt-get update && apt-get install -y \
     libssl3 \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
@@ -67,8 +68,9 @@ WORKDIR /app
 COPY --from=builder /tmp/web-server /app/web-server
 COPY --from=builder /tmp/streamer /app/streamer
 
-# Copy web assets (use 'dist' for debug builds, 'static' for release builds - see web.rs)
+# Copy web assets to both locations (debug uses 'dist', release uses 'static' - see web.rs)
 COPY --from=builder /build/moonlight-web/web-server/dist /app/dist
+COPY --from=builder /build/moonlight-web/web-server/dist /app/static
 
 # Create config directory
 RUN mkdir -p /server
