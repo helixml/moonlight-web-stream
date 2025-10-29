@@ -462,6 +462,7 @@ async fn get_sessions(
     Either::Left(Json(GetSessionsResponse { sessions }))
 }
 
+// CRITICAL: Config must be added to scope for pair_host to work (rc13 rebuild)
 pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data<Config>) -> impl HttpServiceFactory {
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))

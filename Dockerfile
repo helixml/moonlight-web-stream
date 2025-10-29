@@ -72,8 +72,17 @@ COPY --from=builder /tmp/streamer /app/streamer
 COPY --from=builder /build/moonlight-web/web-server/dist /app/dist
 COPY --from=builder /build/moonlight-web/web-server/dist /app/static
 
-# Create config directory
-RUN mkdir -p /server
+# Create server config directory (will be bind-mounted in production)
+RUN mkdir -p /app/server
+
+# Copy template files to /app/templates (NOT bind-mounted, always available from image)
+RUN mkdir -p /app/templates
+COPY --from=builder /build/server-templates/data.json.template /app/templates/
+COPY --from=builder /build/server-templates/config.json.template /app/templates/
+
+# Copy init script to /app/server (will be available both from image and bind-mount)
+COPY --from=builder /build/server-templates/init-moonlight-config.sh /app/server/
+RUN chmod +x /app/server/init-moonlight-config.sh
 
 # Enable trace logging for debugging UDP/streaming issues
 ENV RUST_LOG=moonlight_common=trace,moonlight_web=trace
