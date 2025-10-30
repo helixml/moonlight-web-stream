@@ -74,3 +74,4 @@ serde = ["dep:serde"]
 
 [lints]
 workspace = true
+# Force rebuild

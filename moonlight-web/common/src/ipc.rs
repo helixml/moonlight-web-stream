@@ -30,8 +30,10 @@ pub enum ServerIpcMessage {
         client_certificate_pem: String,
         server_certificate_pem: String,
         app_id: u32,
+        keepalive_mode: bool,  // If true, bypass WebRTC and connect directly to Moonlight
     },
     WebSocket(StreamClientMessage),
+    ClientJoined,  // Signal that a browser client joined the keepalive session
     Stop,
 }
 

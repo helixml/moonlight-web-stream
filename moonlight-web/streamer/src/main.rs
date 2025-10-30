@@ -86,6 +86,9 @@ async fn main() {
     )
     .expect("failed to init logger");
 
+    // VERSION MARKER - increment to verify new build is running
+    info!("[Streamer v4]: Server sends offer to joining browser (no peer reset)");
+
     let default_panic = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
         default_panic(info);
@@ -115,6 +118,7 @@ async fn main() {
         client_certificate_pem,
         server_certificate_pem,
         app_id,
+        keepalive_mode,
     ) = loop {
         match ipc_receiver.recv().await {
             Some(ServerIpcMessage::Init {
@@ -127,6 +131,7 @@ async fn main() {
                 client_certificate_pem,
                 server_certificate_pem,
                 app_id,
+                keepalive_mode,
             }) => {
                 debug!(
                     "Client supported codecs: {:?}",
@@ -146,6 +151,7 @@ async fn main() {
                     client_certificate_pem,
                     server_certificate_pem,
                     app_id,
+                    keepalive_mode,
                 );
             }
             _ => continue,
@@ -247,6 +253,7 @@ async fn main() {
         ipc_receiver,
         &api,
         rtc_config,
+        keepalive_mode,
     )
     .await
     .expect("failed to create connection");
@@ -296,6 +303,10 @@ struct StreamConnection {
     // Stream
     pub stream: RwLock<Option<MoonlightStream>>,
     pub terminate: Notify,
+    // Keepalive mode: WebRTC peer is optional, only Moonlight stream matters
+    pub keepalive_mode: bool,
+    // Track if stop already called (idempotency)
+    pub stopped: Mutex<bool>,
 }
 
 impl StreamConnection {
@@ -307,6 +318,7 @@ impl StreamConnection {
         mut ipc_receiver: IpcReceiver<ServerIpcMessage>,
         api: &API,
         config: RTCConfiguration,
+        keepalive_mode: bool,
     ) -> Result<Arc<Self>, anyhow::Error> {
         // Send WebRTC Info
         ipc_sender
@@ -341,6 +353,8 @@ impl StreamConnection {
             input,
             stream: Default::default(),
             terminate: Notify::new(),
+            keepalive_mode,
+            stopped: Mutex::new(false),
         });
 
         // -- Connection state
@@ -409,27 +423,63 @@ impl StreamConnection {
             })
         });
 
+        // In keepalive mode, start Moonlight stream immediately without waiting for WebRTC
+        // This launches the Wolf container and begins streaming frames (which are thrown away)
+        // When a real client Joins later, the existing peer will be used for WebRTC
+        if keepalive_mode {
+            info!("[Keepalive]: Starting Moonlight stream once (no auto-restart)");
+            let this_clone = this.clone();
+            spawn(async move {
+                match this_clone.start_stream().await {
+                    Ok(_) => {
+                        info!("[Keepalive]: Moonlight stream started successfully");
+                    }
+                    Err(err) => {
+                        warn!("[Keepalive]: Failed to start initial stream: {err:?}");
+                    }
+                }
+                // No restart loop - if stream fails, create a new session
+            });
+        }
+
         Ok(this)
     }
 
     // -- Handle Connection State
     async fn on_ice_connection_state_change(self: &Arc<Self>, state: RTCIceConnectionState) {
-        #[allow(clippy::collapsible_if)]
+        info!("ICE connection state changed: {:?}", state);
+
         if matches!(state, RTCIceConnectionState::Connected) {
+            // Start Moonlight stream when ICE connects (for non-keepalive connections)
+            // Keepalive mode starts stream immediately without waiting for ICE
+            let stream_active = {
+                let stream_guard = self.stream.read().await;
+                stream_guard.is_some()
+            };
+
+            if stream_active {
+                info!("[Stream]: ICE connected, Moonlight stream already active");
+                return;
+            }
+
+            info!("[Stream]: ICE connected, starting Moonlight stream now");
             if let Err(err) = self.start_stream().await {
                 warn!("[Stream]: failed to start stream: {err:?}");
-
                 self.stop().await;
             }
         }
     }
     async fn on_peer_connection_state_change(&self, state: RTCPeerConnectionState) {
+        // CLEAN DISCONNECT: Always stop on peer disconnect to properly clean up Wolf session
+        // This allows RESUME to work correctly (Wolf pauses pipeline, session stays resumable)
+        // Previously we skipped this for keepalive mode, but that prevented proper cleanup
         if matches!(
             state,
             RTCPeerConnectionState::Failed
                 | RTCPeerConnectionState::Disconnected
                 | RTCPeerConnectionState::Closed
         ) {
+            info!("[Stream]: Peer disconnected, stopping stream cleanly for RESUME");
             self.stop().await;
         }
     }
@@ -514,11 +564,78 @@ impl StreamConnection {
         true
     }
 
-    async fn on_ipc_message(&self, message: ServerIpcMessage) {
+    async fn send_offer_with_ice_restart(&self) -> bool {
+        use webrtc::peer_connection::offer_answer_options::RTCOfferOptions;
+
+        // ICE restart generates fresh ICE credentials, preventing username conflicts
+        let options = RTCOfferOptions {
+            ice_restart: true,
+            ..Default::default()
+        };
+
+        let local_description = match self.peer.create_offer(Some(options)).await {
+            Err(err) => {
+                warn!("[Signaling]: failed to create offer with ICE restart: {err:?}");
+                return false;
+            }
+            Ok(value) => value,
+        };
+
+        if let Err(err) = self
+            .peer
+            .set_local_description(local_description.clone())
+            .await
+        {
+            warn!("[Signaling]: failed to set local description: {err:?}");
+            return false;
+        }
+
+        info!(
+            "[Signaling] Sending offer with ICE restart (fresh credentials)"
+        );
+
+        self.ipc_sender
+            .clone()
+            .send(StreamerIpcMessage::WebSocket(
+                StreamServerMessage::Signaling(StreamSignalingMessage::Description(
+                    RtcSessionDescription {
+                        ty: from_webrtc_sdp(local_description.sdp_type),
+                        sdp: local_description.sdp,
+                    },
+                )),
+            ))
+            .await;
+
+        true
+    }
+
+    async fn on_ipc_message(self: &Arc<Self>, message: ServerIpcMessage) {
         match message {
             ServerIpcMessage::Init { .. } => {}
             ServerIpcMessage::WebSocket(message) => {
                 self.on_ws_message(message).await;
+            }
+            ServerIpcMessage::ClientJoined => {
+                // KICKOFF APPROACH: Browser joins after kickoff disconnected
+                // The kickoff triggered Wolf to start the app, making it resumable
+                // Browser connection creates fresh peer - Moonlight protocol handles RESUME automatically
+                info!("[Kickoff]: Browser client joined - no ICE restart needed (fresh peer)");
+
+                // Just send WebRTC config to the new browser client
+                // The normal WebRTC negotiation will handle everything
+                let ice_servers: Vec<_> = self.peer.get_configuration().await.ice_servers.iter()
+                    .cloned()
+                    .map(from_webrtc_ice)
+                    .collect();
+
+                self.ipc_sender.clone()
+                    .send(StreamerIpcMessage::WebSocket(
+                        StreamServerMessage::WebRtcConfig { ice_servers }
+                    ))
+                    .await;
+
+                // NOTE: Removed ICE restart - browser gets fresh peer, clean track bindings
+                // NOTE: Removed stream restart - Moonlight protocol auto-RESUME handles this
             }
             ServerIpcMessage::Stop => {
                 self.stop().await;
@@ -645,7 +762,7 @@ impl StreamConnection {
 
         let connection_listener = StreamConnectionListener::new(self.clone());
 
-        let stream = match host
+        let (stream, client_id) = match host
             .start_stream(
                 &self.moonlight,
                 self.info.app_id,
@@ -716,6 +833,7 @@ impl StreamConnection {
                         capabilities,
                         width,
                         height,
+                        client_id,
                     },
                 ))
                 .await;
@@ -730,7 +848,22 @@ impl StreamConnection {
     }
 
     async fn stop(&self) {
-        debug!("[Stream]: Stopping...");
+        // Check if already stopped (idempotency - can be called from WebSocket close AND peer disconnect)
+        {
+            let mut stopped = self.stopped.lock().await;
+            if *stopped {
+                debug!("[Stream]: stop() already called, skipping");
+                return;
+            }
+            *stopped = true;
+        }
+
+        info!("[Stream]: Stopping - cleanly dropping stream (Wolf will auto-pause)");
+
+        // DON'T call cancel() - that fires StopStreamEvent and removes session!
+        // Instead, just drop the MoonlightStream cleanly.
+        // Wolf detects RTSP connection close and pauses pipeline automatically.
+        // This is what moonlight-qt does - no explicit cancel needed!
 
         let mut ipc_sender = self.ipc_sender.clone();
         spawn(async move {
@@ -764,7 +897,7 @@ impl StreamConnection {
         let mut ipc_sender = self.ipc_sender.clone();
         ipc_sender.send(StreamerIpcMessage::Stop).await;
 
-        info!("Terminating Self");
+        info!("[Stream]: Terminated cleanly - session should be resumable");
         self.terminate.notify_waiters();
     }
 }

@@ -26,8 +26,9 @@ use crate::{
 use common::api_bindings::{
     DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery,
     GetHostResponse, GetHostsResponse, PostPairRequest, PostPairResponse1, PostPairResponse2,
-    PostWakeUpRequest, PutHostRequest, PutHostResponse, UndetailedHost,
+    PostWakeUpRequest, PutHostRequest, PutHostResponse, UndetailedHost, SessionMode,
 };
+use serde::Serialize;
 
 mod auth;
 mod stream;
@@ -136,6 +137,7 @@ async fn put_host(
         },
         moonlight: host,
         app_images_cache: Default::default(),
+        configured_unique_id: None,
     }));
 
     drop(hosts);
@@ -226,10 +228,47 @@ async fn pair_host(
             return;
         };
 
-        let Ok(pin) = PairPin::generate() else {
-            warn!("[Api]: failed to generate pin!");
-
-            return
+        // Check if internal auto-pairing PIN is set via environment variable
+        let pin = if let Ok(env_pin) = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN") {
+            // Parse 4-digit PIN from string
+            if env_pin.len() == 4 && env_pin.chars().all(|c| c.is_ascii_digit()) {
+                let digits: Vec<u8> = env_pin.chars()
+                    .map(|c| c.to_digit(10).unwrap() as u8)
+                    .collect();
+                match PairPin::from_array([digits[0], digits[1], digits[2], digits[3]]) {
+                    Some(pin) => {
+                        info!("[Api]: Using internal pairing PIN from MOONLIGHT_INTERNAL_PAIRING_PIN");
+                        pin
+                    }
+                    None => {
+                        warn!("[Api]: Invalid PIN digits in MOONLIGHT_INTERNAL_PAIRING_PIN, generating random PIN");
+                        match PairPin::generate() {
+                            Ok(pin) => pin,
+                            Err(_) => {
+                                warn!("[Api]: failed to generate pin!");
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                warn!("[Api]: Invalid MOONLIGHT_INTERNAL_PAIRING_PIN format (must be 4 digits), generating random PIN");
+                match PairPin::generate() {
+                    Ok(pin) => pin,
+                    Err(_) => {
+                        warn!("[Api]: failed to generate pin!");
+                        return;
+                    }
+                }
+            }
+        } else {
+            match PairPin::generate() {
+                Ok(pin) => pin,
+                Err(_) => {
+                    warn!("[Api]: failed to generate pin!");
+                    return;
+                }
+            }
         };
 
             let Ok(text) = serde_json::to_string(&PostPairResponse1::Pin(pin.to_string())) else {
@@ -238,6 +277,9 @@ async fn pair_host(
 
             let bytes = Bytes::from_owner(text);
             yield Ok::<_, Error>(bytes);
+
+        // Clear cache to allow pairing even if previous connection attempt failed
+        host.moonlight.clear_cache();
 
         if let Err(err) = host.moonlight
             .pair(
@@ -384,11 +426,49 @@ async fn get_app_image(
     }
 }
 
-pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl HttpServiceFactory {
+/// Session info for external monitoring (Agent Sandboxes dashboard)
+#[derive(Debug, Serialize)]
+struct SessionInfo {
+    session_id: String,
+    client_unique_id: Option<String>,  // Unique Moonlight client ID for this session
+    mode: SessionMode,
+    has_websocket: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GetSessionsResponse {
+    sessions: Vec<SessionInfo>,
+}
+
+#[get("/sessions")]
+async fn get_sessions(
+    data: Data<RuntimeApiData>,
+) -> Either<Json<GetSessionsResponse>, HttpResponse> {
+    let sessions_lock = data.sessions.read().await;
+
+    let mut sessions = Vec::new();
+    for (session_id, stream_session) in sessions_lock.iter() {
+        let ws_lock = stream_session.websocket.lock().await;
+        let has_websocket = ws_lock.is_some();
+
+        sessions.push(SessionInfo {
+            session_id: session_id.clone(),
+            client_unique_id: stream_session.client_unique_id.clone(),  // Include unique client ID
+            mode: stream_session.mode,
+            has_websocket,
+        });
+    }
+
+    Either::Left(Json(GetSessionsResponse { sessions }))
+}
+
+// CRITICAL: Config must be added to scope for pair_host to work (rc13 rebuild)
+pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data<Config>) -> impl HttpServiceFactory {
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))
         .app_data(ApiCredentials(credentials))
         .app_data(data)
+        .app_data(config)  // Add Config to scope so pair_host and other endpoints can extract it
         .service(services![
             authenticate,
             stream::start_host,
@@ -401,6 +481,7 @@ pub fn api_service(data: Data<RuntimeApiData>, credentials: String) -> impl Http
             pair_host,
             get_apps,
             get_app_image,
+            get_sessions,
         ])
 }
 

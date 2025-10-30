@@ -57,6 +57,8 @@ impl RequestClient for Client {
     fn with_defaults_long_timeout() -> Result<Self, Self::Error> {
         Ok(default_builder()
             .timeout(Duration::from_secs(100))
+            // Accept self-signed certificates for internal Wolf communication
+            .danger_accept_invalid_certs(true)
             .build()?)
     }
     fn with_defaults() -> Result<Self, Self::Error> {

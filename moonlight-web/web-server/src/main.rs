@@ -75,7 +75,7 @@ async fn main2() -> Result<(), anyhow::Error> {
         move || {
             App::new()
                 .app_data(config.clone())
-                .service(api_service(data.clone(), config.credentials.to_string()))
+                .service(api_service(data.clone(), config.credentials.to_string(), config.clone()))
                 .service(web_config_js_service())
                 .service(web_service())
         }
