@@ -317,6 +317,7 @@ pub enum StreamServerMessage {
         capabilities: StreamCapabilities,
         width: u32,
         height: u32,
+        client_id: Option<String>, // Wolf's session_id for auto-join functionality
     },
     ConnectionTerminated {
         error_code: i32,

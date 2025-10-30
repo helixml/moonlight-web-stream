@@ -33,6 +33,7 @@ pub struct ClientStreamRequest {
 pub struct HostLaunchResponse {
     pub game_session: u32,
     pub rtsp_session_url: String,
+    pub client_id: Option<String>, // Wolf's session_id for auto-join functionality
 }
 
 pub async fn host_launch<C: RequestClient>(
@@ -51,6 +52,7 @@ pub async fn host_launch<C: RequestClient>(
     Ok(HostLaunchResponse {
         game_session: xml_child_text::<C>(root, "gamesession")?.parse()?,
         rtsp_session_url: xml_child_text::<C>(root, "sessionUrl0")?.to_string(),
+        client_id: xml_child_text::<C>(root, "clientId").ok().map(|s| s.to_string()),
     })
 }
 
@@ -58,6 +60,7 @@ pub async fn host_launch<C: RequestClient>(
 pub struct HostResumeResponse {
     pub resume: u32,
     pub rtsp_session_url: String,
+    pub client_id: Option<String>, // Wolf's session_id for auto-join functionality
 }
 
 pub async fn host_resume<C: RequestClient>(
@@ -80,6 +83,7 @@ pub async fn host_resume<C: RequestClient>(
     Ok(HostResumeResponse {
         resume: xml_child_text::<C>(root, "resume")?.parse()?,
         rtsp_session_url: xml_child_text::<C>(root, "sessionUrl0")?.to_string(),
+        client_id: xml_child_text::<C>(root, "clientId").ok().map(|s| s.to_string()),
     })
 }
 

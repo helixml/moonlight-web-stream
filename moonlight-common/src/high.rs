@@ -581,7 +581,7 @@ mod stream {
             connection_listener: impl ConnectionListener + Send + Sync + 'static,
             video_decoder: impl VideoDecoder + Send + Sync + 'static,
             audio_decoder: impl AudioDecoder + Send + Sync + 'static,
-        ) -> Result<MoonlightStream, HostError<C::Error>> {
+        ) -> Result<(MoonlightStream, Option<String>), HostError<C::Error>> {
             // Change streaming options if required
 
             if hdr && !self.is_hdr_supported().await? {
@@ -648,7 +648,7 @@ mod stream {
 
             // Launch if no game running OR if requesting a different app than what's running
             // This allows multiple apps to be launched concurrently from the same client
-            let rtsp_session_url = if current_game == 0 || current_game != app_id {
+            let (rtsp_session_url, client_id) = if current_game == 0 || current_game != app_id {
                 let launch_response = host_launch(
                     instance,
                     &mut self.client,
@@ -658,7 +658,7 @@ mod stream {
                 )
                 .await?;
 
-                launch_response.rtsp_session_url
+                (launch_response.rtsp_session_url, launch_response.client_id)
             } else {
                 // Resume same app that's already running
                 let resume_response = host_resume(
@@ -670,7 +670,7 @@ mod stream {
                 )
                 .await?;
 
-                resume_response.rtsp_session_url
+                (resume_response.rtsp_session_url, resume_response.client_id)
             };
 
             let app_version = self.version().await?;
@@ -717,7 +717,7 @@ mod stream {
             // Clear cache because now there's an active app
             self.clear_cache();
 
-            Ok(connection)
+            Ok((connection, client_id))
         }
     }
 }

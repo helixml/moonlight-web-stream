@@ -58,6 +58,8 @@ export class Stream {
 
     private streamerSize: [number, number]
 
+    private wolfClientID: string | null = null  // Wolf's client_id for auto-join functionality
+
     constructor(api: Api, hostId: number, appId: number, settings: StreamSettings, supportedVideoFormats: VideoCodecSupport, viewerScreenSize: [number, number]) {
         this.api = api
         this.hostId = hostId
@@ -216,6 +218,10 @@ export class Stream {
             const capabilities = message.ConnectionComplete.capabilities
             const width = message.ConnectionComplete.width
             const height = message.ConnectionComplete.height
+            const client_id = message.ConnectionComplete.client_id
+
+            // Store Wolf client_id for auto-join functionality
+            this.wolfClientID = client_id || null
 
             const event: InfoEvent = new CustomEvent("stream-info", {
                 detail: { type: "connectionComplete", capabilities }
@@ -476,6 +482,10 @@ export class Stream {
 
     getStreamerSize(): [number, number] {
         return this.streamerSize
+    }
+
+    getWolfClientID(): string | null {
+        return this.wolfClientID
     }
 }
 

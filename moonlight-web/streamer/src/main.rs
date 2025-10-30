@@ -762,7 +762,7 @@ impl StreamConnection {
 
         let connection_listener = StreamConnectionListener::new(self.clone());
 
-        let stream = match host
+        let (stream, client_id) = match host
             .start_stream(
                 &self.moonlight,
                 self.info.app_id,
@@ -833,6 +833,7 @@ impl StreamConnection {
                         capabilities,
                         width,
                         height,
+                        client_id,
                     },
                 ))
                 .await;
