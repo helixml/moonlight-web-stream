@@ -858,12 +858,11 @@ impl StreamConnection {
             *stopped = true;
         }
 
-        info!("[Stream]: Stopping - cleanly dropping stream (Wolf will auto-pause)");
+        info!("[Stream]: Stopping - dropping stream and canceling Wolf-UI session");
 
-        // DON'T call cancel() - that fires StopStreamEvent and removes session!
-        // Instead, just drop the MoonlightStream cleanly.
-        // Wolf detects RTSP connection close and pauses pipeline automatically.
-        // This is what moonlight-qt does - no explicit cancel needed!
+        // Lobbies mode: Wolf lobbies provide container persistence, Wolf-UI sessions are ephemeral
+        // Always cancel Wolf-UI session on disconnect - trivial to recreate on next connection
+        // Lobby persists the Zed container independently of streaming sessions
 
         let mut ipc_sender = self.ipc_sender.clone();
         spawn(async move {
@@ -894,10 +893,28 @@ impl StreamConnection {
             warn!("[Stream]: failed to stop stream: {err}");
         };
 
+        // NEW: Cancel Wolf-UI session to free GPU resources (245MB per session)
+        // This removes the streaming session while the lobby (Zed container) persists
+        {
+            let mut host = self.info.host.lock().await;
+            match host.cancel().await {
+                Ok(true) => {
+                    info!("[Stream]: ✅ Canceled Wolf-UI session successfully");
+                }
+                Ok(false) => {
+                    info!("[Stream]: Wolf-UI session not owned by this client, skipped cancel");
+                }
+                Err(err) => {
+                    warn!("[Stream]: ⚠️ Failed to cancel Wolf-UI session: {err:?}");
+                    // Non-fatal - session will be cleaned up by Helix API's periodic orphan cleanup
+                }
+            }
+        }
+
         let mut ipc_sender = self.ipc_sender.clone();
         ipc_sender.send(StreamerIpcMessage::Stop).await;
 
-        info!("[Stream]: Terminated cleanly - session should be resumable");
+        info!("[Stream]: Terminated cleanly - lobby persists for next connection");
         self.terminate.notify_waiters();
     }
 }
