@@ -23,6 +23,7 @@ moonlight-common-sys = { path = "./moonlight-common-sys", features = [
 # Log
 log = "0.4.28"
 simplelog = "0.12.2"
+env_logger = "0.11.3"
 printf-compat = { version = "0.2.1" }
 
 # Util

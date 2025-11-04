@@ -7,7 +7,7 @@ use common::{
     ipc::{IpcReceiver, IpcSender, ServerIpcMessage, StreamerIpcMessage, create_process_ipc},
     serialize_json,
 };
-use log::{LevelFilter, debug, info, warn};
+use log::{debug, info, warn};
 use moonlight_common::{
     MoonlightError,
     high::HostError,
@@ -19,7 +19,6 @@ use moonlight_common::{
     },
 };
 use pem::Pem;
-use simplelog::{ColorChoice, TermLogger, TerminalMode};
 use tokio::{
     io::{stdin, stdout},
     runtime::Handle,
@@ -73,18 +72,20 @@ mod video;
 
 #[tokio::main]
 async fn main() {
-    #[cfg(debug_assertions)]
-    let log_level = LevelFilter::Debug;
-    #[cfg(not(debug_assertions))]
-    let log_level = LevelFilter::Info;
+    // Initialize env_logger which respects RUST_LOG with module-specific filters
+    // e.g., RUST_LOG=moonlight_common=trace,webrtc_sctp=warn
+    // If RUST_LOG is not set, use Info for release builds, Debug for debug builds
+    let default_filter = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "info"
+    };
 
-    TermLogger::init(
-        log_level,
-        simplelog::Config::default(),
-        TerminalMode::Stderr,
-        ColorChoice::Auto,
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(default_filter)
     )
-    .expect("failed to init logger");
+    .format_timestamp_millis()
+    .init();
 
     // VERSION MARKER - increment to verify new build is running
     info!("[Streamer v4]: Server sends offer to joining browser (no peer reset)");
