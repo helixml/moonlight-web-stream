@@ -363,14 +363,14 @@ fn video_format_to_codec(format: VideoFormat) -> Option<RTCRtpCodecParameters> {
     ];
 
     match format {
-        // -- H264 Constrained Baseline Profile
+        // -- H264 Main Profile (matches Wolf encoder)
         VideoFormat::H264 => Some(RTCRtpCodecParameters {
             capability: RTCRtpCodecCapability {
                 mime_type: MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
                 sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=4d0033"
                         .to_owned(),
                 rtcp_feedback: rtcp_feedback.clone(),
             },

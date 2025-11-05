@@ -83,7 +83,10 @@ where
 
     pub fn blocking_send_sample(&self, sample: Track::Sample) {
         if let Some(sender) = self.sender.as_ref() {
-            let _ = sender.blocking_send(sample);
+            if let Err(err) = sender.blocking_send(sample) {
+                warn!("[Stream]: Dropped packet - channel full (queue size: {}): {}",
+                    self.channel_queue_size, err);
+            }
         }
     }
 }
