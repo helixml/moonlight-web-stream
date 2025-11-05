@@ -495,8 +495,9 @@ pub async fn start_host(
                 ipc.send(ServerIpcMessage::WebSocket(message)).await;
             }
 
-            // WebSocket disconnected - send Stop for clean cancel, then enter keepalive mode
-            info!("[Stream]: WebSocket disconnected for session {}, sending Stop for clean cancel", session_id);
+            // WebSocket disconnected - fully stop the session instead of keeping it alive
+            // This prevents trying to reuse Wolf-UI sessions across different lobbies
+            info!("[Stream]: WebSocket disconnected for session {}, stopping Wolf-UI session completely", session_id);
 
             // Send Stop to ensure streamer calls cancel even if peer never reached Failed state
             {
@@ -504,10 +505,19 @@ pub async fn start_host(
                 ipc_sender.send(ServerIpcMessage::Stop).await;
             }
 
+            // Remove session from registry immediately (don't wait for IPC to close)
+            // This prevents trying to reuse a stopped Wolf-UI session for a new lobby
+            {
+                let mut sessions = data.sessions.write().await;
+                sessions.remove(&session_id);
+                info!("[Stream]: Removed session {} from registry after WebSocket disconnect", session_id);
+            }
+
+            // WebSocket cleanup
             let mut ws_lock = stream_session.websocket.lock().await;
             *ws_lock = None;
 
-            info!("[Stream]: Session {} entering keepalive mode after Stop sent", session_id);
+            info!("[Stream]: Session {} fully stopped and removed (not kept alive)", session_id);
         } else {
             // Keepalive mode: Keep WebSocket open, let client control disconnect
             // When client (Helix) closes after 10s, we'll detect it and send Stop
