@@ -228,10 +228,47 @@ async fn pair_host(
             return;
         };
 
-        let Ok(pin) = PairPin::generate() else {
-            warn!("[Api]: failed to generate pin!");
-
-            return
+        // Read PIN from env var for auto-pairing, fallback to random generation
+        let pin = if let Ok(env_pin) = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN") {
+            // Parse 4-digit PIN from string
+            if env_pin.len() == 4 && env_pin.chars().all(|c| c.is_ascii_digit()) {
+                let digits: Vec<u8> = env_pin.chars()
+                    .map(|c| c.to_digit(10).unwrap() as u8)
+                    .collect();
+                match PairPin::from_array([digits[0], digits[1], digits[2], digits[3]]) {
+                    Some(pin) => {
+                        info!("[Api]: Using internal pairing PIN from MOONLIGHT_INTERNAL_PAIRING_PIN");
+                        pin
+                    }
+                    None => {
+                        warn!("[Api]: Invalid PIN digits in MOONLIGHT_INTERNAL_PAIRING_PIN, generating random PIN");
+                        match PairPin::generate() {
+                            Ok(pin) => pin,
+                            Err(_) => {
+                                warn!("[Api]: failed to generate pin!");
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else {
+                warn!("[Api]: Invalid MOONLIGHT_INTERNAL_PAIRING_PIN format (must be 4 digits), generating random PIN");
+                match PairPin::generate() {
+                    Ok(pin) => pin,
+                    Err(_) => {
+                        warn!("[Api]: failed to generate pin!");
+                        return;
+                    }
+                }
+            }
+        } else {
+            match PairPin::generate() {
+                Ok(pin) => pin,
+                Err(_) => {
+                    warn!("[Api]: failed to generate pin!");
+                    return;
+                }
+            }
         };
 
             let Ok(text) = serde_json::to_string(&PostPairResponse1::Pin(pin.to_string())) else {
