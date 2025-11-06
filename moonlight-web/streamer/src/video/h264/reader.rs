@@ -43,8 +43,8 @@ where
                 match header.nal_unit_type {
                     NalUnitType::CodedSliceIDR => {
                         let count = NAL_COUNTER_IDR.fetch_add(1, Ordering::Relaxed) + 1;
-                        if count % 600 == 0 {  // Log every 10 seconds @ 60 FPS
-                            info!("[H264 Stats] I-frames: {}, P-frames: {}, SPS: {}, PPS: {}, SEI: {}",
+                        if count % 60 == 0 {  // Log every second @ 60 FPS
+                            eprintln!("[H264 Stats] I-frames: {}, P-frames: {}, SPS: {}, PPS: {}, SEI: {}",
                                 count,
                                 NAL_COUNTER_NON_IDR.load(Ordering::Relaxed),
                                 NAL_COUNTER_SPS.load(Ordering::Relaxed),
