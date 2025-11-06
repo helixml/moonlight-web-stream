@@ -3,7 +3,7 @@ import { showErrorPopup } from "./component/error.js";
 import { InputComponent } from "./component/input.js";
 import { FormModal } from "./component/modal/form.js";
 import { showMessage, showModal } from "./component/modal/index.js";
-import { buildUrl } from "./config_.js";
+import { buildUrl, isCredentialAuthenticationEnabled } from "./config_.js";
 
 // IMPORTANT: this should be a bit bigger than the moonlight-common reqwest backend timeout if some hosts are offline!
 const API_TIMEOUT = 6000
@@ -21,25 +21,29 @@ export async function getApi(host_url?: string): Promise<Api> {
 
     let credentials = sessionStorage.getItem("mlCredentials");
 
-    while (credentials == null) {
-        const prompt = new ApiCredentialsPrompt()
-        const testCredentials = await showModal(prompt)
+    if (isCredentialAuthenticationEnabled()) {
+        while (credentials == null) {
+            const prompt = new ApiCredentialsPrompt()
+            const testCredentials = await showModal(prompt)
 
-        if (testCredentials == null) {
-            continue;
+            if (testCredentials == null) {
+                continue;
+            }
+
+            let api = { host_url, credentials: testCredentials }
+
+            if (await apiAuthenticate(api)) {
+                sessionStorage.setItem("mlCredentials", testCredentials)
+
+                credentials = api.credentials;
+
+                break;
+            } else {
+                await showMessage("Credentials are not Valid")
+            }
         }
-
-        let api = { host_url, credentials: testCredentials }
-
-        if (await apiAuthenticate(api)) {
-            sessionStorage.setItem("mlCredentials", testCredentials)
-
-            credentials = api.credentials;
-
-            break;
-        } else {
-            await showMessage("Credentials are not Valid")
-        }
+    } else {
+        credentials = null
     }
 
     currentApi = { host_url, credentials }
@@ -83,7 +87,12 @@ class ApiCredentialsPrompt extends FormModal<string> {
                     file.text().then((credentials) => {
                         abortController.abort()
 
-                        resolve(credentials)
+                        // Remove carriage return and new line
+                        resolve(
+                            credentials
+                                .replace(/\r/g, "")
+                                .replace(/\n/g, "")
+                        )
                     })
                 }
             }, { signal: abortController.signal })
@@ -108,7 +117,7 @@ class ApiCredentialsPrompt extends FormModal<string> {
 
 export type Api = {
     host_url: string
-    credentials: string,
+    credentials: string | null,
 }
 
 export type ApiFetchInit = {
@@ -127,8 +136,11 @@ function buildRequest(api: Api, endpoint: string, method: string, init?: { respo
     const url = `${api.host_url}${endpoint}${queryString}`
 
     const headers: any = {
-        "Authorization": `Bearer ${api.credentials}`,
     };
+
+    if (isCredentialAuthenticationEnabled()) {
+        headers["Authorization"] = `Bearer ${api.credentials}`;
+    }
 
     if (init?.json) {
         headers["Content-Type"] = "application/json";
@@ -202,7 +214,7 @@ export async function apiAuthenticate(api: Api): Promise<boolean> {
     } catch (e) {
         if (e instanceof FetchError) {
             const response = e.getResponse()
-            if (response && response.status == 403) {
+            if (response && response.status == 401) {
                 return false
             } else {
                 showErrorPopup(e.message)

@@ -20,17 +20,17 @@ use tokio::sync::Mutex;
 
 use crate::{
     Config,
-    api::auth::{ApiCredentials, auth_middleware},
+    api::auth::auth_middleware,
     data::{HostCache, RuntimeApiData, RuntimeApiHost},
 };
 use common::api_bindings::{
     DeleteHostQuery, DetailedHost, GetAppImageQuery, GetAppsQuery, GetAppsResponse, GetHostQuery,
     GetHostResponse, GetHostsResponse, PostPairRequest, PostPairResponse1, PostPairResponse2,
-    PostWakeUpRequest, PutHostRequest, PutHostResponse, UndetailedHost, SessionMode,
+    PostWakeUpRequest, PutHostRequest, PutHostResponse, SessionMode, UndetailedHost,
 };
 use serde::Serialize;
 
-mod auth;
+pub mod auth;
 mod stream;
 
 #[get("/authenticate")]
@@ -137,7 +137,7 @@ async fn put_host(
         },
         moonlight: host,
         app_images_cache: Default::default(),
-        configured_unique_id: None,
+        configured_unique_id: None,  // From upstream
     }));
 
     drop(hosts);
@@ -228,47 +228,10 @@ async fn pair_host(
             return;
         };
 
-        // Check if internal auto-pairing PIN is set via environment variable
-        let pin = if let Ok(env_pin) = std::env::var("MOONLIGHT_INTERNAL_PAIRING_PIN") {
-            // Parse 4-digit PIN from string
-            if env_pin.len() == 4 && env_pin.chars().all(|c| c.is_ascii_digit()) {
-                let digits: Vec<u8> = env_pin.chars()
-                    .map(|c| c.to_digit(10).unwrap() as u8)
-                    .collect();
-                match PairPin::from_array([digits[0], digits[1], digits[2], digits[3]]) {
-                    Some(pin) => {
-                        info!("[Api]: Using internal pairing PIN from MOONLIGHT_INTERNAL_PAIRING_PIN");
-                        pin
-                    }
-                    None => {
-                        warn!("[Api]: Invalid PIN digits in MOONLIGHT_INTERNAL_PAIRING_PIN, generating random PIN");
-                        match PairPin::generate() {
-                            Ok(pin) => pin,
-                            Err(_) => {
-                                warn!("[Api]: failed to generate pin!");
-                                return;
-                            }
-                        }
-                    }
-                }
-            } else {
-                warn!("[Api]: Invalid MOONLIGHT_INTERNAL_PAIRING_PIN format (must be 4 digits), generating random PIN");
-                match PairPin::generate() {
-                    Ok(pin) => pin,
-                    Err(_) => {
-                        warn!("[Api]: failed to generate pin!");
-                        return;
-                    }
-                }
-            }
-        } else {
-            match PairPin::generate() {
-                Ok(pin) => pin,
-                Err(_) => {
-                    warn!("[Api]: failed to generate pin!");
-                    return;
-                }
-            }
+        let Ok(pin) = PairPin::generate() else {
+            warn!("[Api]: failed to generate pin!");
+
+            return
         };
 
             let Ok(text) = serde_json::to_string(&PostPairResponse1::Pin(pin.to_string())) else {
@@ -277,9 +240,6 @@ async fn pair_host(
 
             let bytes = Bytes::from_owner(text);
             yield Ok::<_, Error>(bytes);
-
-        // Clear cache to allow pairing even if previous connection attempt failed
-        host.moonlight.clear_cache();
 
         if let Err(err) = host.moonlight
             .pair(
@@ -301,9 +261,18 @@ async fn pair_host(
             return;
         };
 
+        let _ = data.file_writer.try_send(());
+
         let detailed_host = match into_detailed_host(host_id as usize, &mut host.moonlight).await {
             Err(err) => {
-                warn!("failed to get host info after pairing for host {host_id}: {err:?}");
+                warn!("[Api] failed to get host info after pairing for host {host_id}: {err:?}");
+
+                let Ok(text) = serde_json::to_string(&PostPairResponse2::PairError) else {
+                    unreachable!()
+                };
+
+                let bytes = Bytes::from_owner(text);
+                yield Ok::<_, Error>(bytes);
 
                 return
             }
@@ -318,8 +287,6 @@ async fn pair_host(
 
         drop(host);
         drop(hosts);
-
-        let _ = data.file_writer.try_send(());
 
         let bytes = Bytes::from_owner(text);
         yield Ok::<_, Error>(bytes);
@@ -430,7 +397,7 @@ async fn get_app_image(
 #[derive(Debug, Serialize)]
 struct SessionInfo {
     session_id: String,
-    client_unique_id: Option<String>,  // Unique Moonlight client ID for this session
+    client_unique_id: Option<String>,
     mode: SessionMode,
     has_websocket: bool,
 }
@@ -453,7 +420,7 @@ async fn get_sessions(
 
         sessions.push(SessionInfo {
             session_id: session_id.clone(),
-            client_unique_id: stream_session.client_unique_id.clone(),  // Include unique client ID
+            client_unique_id: stream_session.client_unique_id.clone(),
             mode: stream_session.mode,
             has_websocket,
         });
@@ -462,13 +429,10 @@ async fn get_sessions(
     Either::Left(Json(GetSessionsResponse { sessions }))
 }
 
-// CRITICAL: Config must be added to scope for pair_host to work (rc13 rebuild)
-pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data<Config>) -> impl HttpServiceFactory {
+pub fn api_service(data: Data<RuntimeApiData>) -> impl HttpServiceFactory {
     web::scope("/api")
         .wrap(middleware::from_fn(auth_middleware))
-        .app_data(ApiCredentials(credentials))
         .app_data(data)
-        .app_data(config)  // Add Config to scope so pair_host and other endpoints can extract it
         .service(services![
             authenticate,
             stream::start_host,
@@ -481,7 +445,7 @@ pub fn api_service(data: Data<RuntimeApiData>, credentials: String, config: Data
             pair_host,
             get_apps,
             get_app_image,
-            get_sessions,
+            get_sessions,  // Our addition for Agent Sandboxes monitoring
         ])
 }
 

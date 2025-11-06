@@ -14,11 +14,11 @@ use common::{
     ipc::{ServerIpcMessage, StreamerIpcMessage, create_child_ipc},
     serialize_json,
 };
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use moonlight_common::{PairStatus, stream::bindings::SupportedVideoFormats};
 use tokio::{process::Command, spawn, sync::Mutex};
 
-use crate::data::RuntimeApiData;
+use crate::{api::auth::ApiCredentials, data::RuntimeApiData};
 
 /// The stream handler WILL authenticate the client because it is a websocket
 /// The Authenticator will let this route through
@@ -26,6 +26,7 @@ use crate::data::RuntimeApiData;
 pub async fn start_host(
     data: Data<RuntimeApiData>,
     config: Data<Config>,
+    credentials: Data<ApiCredentials>,
     request: HttpRequest,
     payload: Payload,
 ) -> Result<HttpResponse, Error> {
@@ -58,10 +59,10 @@ pub async fn start_host(
         };
 
         let StreamClientMessage::AuthenticateAndInit {
-            credentials,
-            session_id,
-            mode,
-            client_unique_id,
+            credentials: request_credentials,  // Optional credentials from client (upstream)
+            session_id,            // Session ID for persistence (ours)
+            mode,                  // Session mode for persistence (ours)
+            client_unique_id,      // Client unique ID for auto-join (ours)
             host_id,
             app_id,
             bitrate,
@@ -81,7 +82,17 @@ pub async fn start_host(
             return;
         };
 
-        if credentials != config.credentials {
+        if !credentials.authenticate_with_credentials(request_credentials.as_deref()) {
+            let _ = send_ws_message(
+                &mut session,
+                StreamServerMessage::StageFailed {
+                    stage: "Authentication".to_string(),
+                    error_code: -1,
+                },
+            )
+            .await;
+
+            let _ = session.close(None).await;
             return;
         }
 
@@ -200,7 +211,7 @@ pub async fn start_host(
             let apps = match host.app_list().await {
                 Ok(value) => value,
                 Err(err) => {
-                    warn!("[Stream]: failed to get app list from host: {err:?}");
+                    error!("[Stream]: failed to get app list from host: {err:?}");
 
                     let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError)
                         .await;
@@ -334,7 +345,7 @@ pub async fn start_host(
         // Starting stage: launch streamer
         let _ = send_ws_message(
             &mut session,
-            StreamServerMessage::StageComplete {
+            StreamServerMessage::StageStarting {
                 stage: "Launch Streamer".to_string(),
             },
         )
@@ -354,7 +365,7 @@ pub async fn start_host(
                 {
                     (child, stdin, stdout)
                 } else {
-                    warn!("[Stream]: streamer process didn't include a stdin or stdout");
+                    error!("[Stream]: streamer process didn't include a stdin or stdout");
 
                     let _ = send_ws_message(&mut session, StreamServerMessage::InternalServerError)
                         .await;
@@ -368,7 +379,7 @@ pub async fn start_host(
                 }
             }
             Err(err) => {
-                warn!("[Stream]: failed to spawn streamer process: {err:?}");
+                error!("[Stream]: failed to spawn streamer process: {err:?}");
 
                 let _ =
                     send_ws_message(&mut session, StreamServerMessage::InternalServerError).await;

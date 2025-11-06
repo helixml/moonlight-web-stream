@@ -20,6 +20,7 @@ export type StreamSettings = {
     audioSampleQueueSize: number
     mouseScrollMode: MouseScrollMode
     controllerConfig: ControllerConfig
+    toggleFullscreenWithKeybind: boolean
 }
 
 export function defaultStreamSettings(): StreamSettings {
@@ -41,7 +42,8 @@ export function defaultStreamSettings(): StreamSettings {
         controllerConfig: {
             invertAB: false,
             invertXY: false
-        }
+        },
+        toggleFullscreenWithKeybind: false
     }
 }
 
@@ -97,6 +99,9 @@ export class StreamSettingsComponent implements Component {
     private controllerHeader: HTMLHeadingElement = document.createElement("h2")
     private controllerInvertAB: InputComponent
     private controllerInvertXY: InputComponent
+
+    private otherHeader: HTMLHeadingElement = document.createElement("h2")
+    private toggleFullscreenWithKeybind: InputComponent
 
     constructor(settings?: StreamSettings) {
         const defaultSettings = defaultStreamSettings()
@@ -260,6 +265,16 @@ export class StreamSettingsComponent implements Component {
             this.controllerInvertXY.setEnabled(false)
         }
 
+        // Other
+        this.otherHeader.innerText = "Other"
+        this.divElement.appendChild(this.otherHeader)
+
+        this.toggleFullscreenWithKeybind = new InputComponent("toggleFullscreenWithKeybind", "checkbox", "Toggle Fullscreen and Mouse Lock with Ctrl + Shift + I", {
+            checked: settings?.toggleFullscreenWithKeybind
+        })
+        this.toggleFullscreenWithKeybind.addChangeListener(this.onSettingsChange.bind(this))
+        this.toggleFullscreenWithKeybind.mount(this.divElement)
+
         this.onSettingsChange()
     }
 
@@ -304,6 +319,8 @@ export class StreamSettingsComponent implements Component {
 
         settings.controllerConfig.invertAB = this.controllerInvertAB.isChecked()
         settings.controllerConfig.invertXY = this.controllerInvertXY.isChecked()
+
+        settings.toggleFullscreenWithKeybind = this.toggleFullscreenWithKeybind.isChecked()
 
         return settings
     }

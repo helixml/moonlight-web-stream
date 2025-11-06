@@ -1,3 +1,6 @@
+//! Moonlilght Pairing
+//! - https://games-on-whales.github.io/wolf/stable/protocols/http-pairing.html
+
 use roxmltree::Document;
 use uuid::fmt::Hyphenated;
 
@@ -213,6 +216,7 @@ pub struct ServerPairResponse5 {
     pub paired: PairStatus,
 }
 
+/// Note: This requires an https client
 pub async fn host_pair5<C: RequestClient>(
     client: &mut C,
     https_hostport: &str,

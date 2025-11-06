@@ -67,7 +67,8 @@ unsafe extern "C" fn setup(
     arFlags: c_int,
 ) -> c_int {
     global_decoder(|decoder| {
-        let audio_config = AudioConfig(audioConfiguration as u32);
+        let audio_config =
+            AudioConfig::from_raw(audioConfiguration as u32).expect("a valid audio configuration");
 
         let raw_opus_config = unsafe { *opusConfig };
         let opus_config = OpusMultistreamConfig {

@@ -44,7 +44,7 @@ impl StreamInput {
         let label = data_channel.label();
 
         match label {
-            "mouse" => {
+            "mouseClicks" | "mouseAbsolute" | "mouseRelative" => {
                 data_channel.on_message(Self::create_simple_handler(
                     connection.clone(),
                     Self::on_mouse_message,

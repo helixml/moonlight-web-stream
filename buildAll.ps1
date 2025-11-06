@@ -56,12 +56,34 @@ foreach($target in $targets) {
 
     echo "------------- Starting Zipping for $target -------------"
     $itemsToZip = @($binaryPaths) + "$outputDir/static"
-    $zipDestination = "$outputDir/moonlight-web-$target.zip"
+    $archiveName = "$outputDir/moonlight-web-$target"
 
-    Compress-Archive -Path $itemsToZip -DestinationPath $zipDestination -Force
+    if ($target -clike "*windows*") {
+        # Create zip
+        $zipDestination = "$archiveName.zip"
+        7z a -tzip $zipDestination $itemsToZip -y
+    } else {
+        # Create tar.gz
+        New-Item -ItemType Directory "$archiveName" -Force | Out-Null
 
-    echo "Created Zip file at $zipDestination"
+        foreach ($item in $itemsToZip) {
+            Copy-Item $item -Recurse -Destination $archiveName
+        }
+
+        $tarDestination = "$archiveName.tar"
+        $gzDestination = "$archiveName.tar.gz"
+        7z a -ttar $tarDestination $archiveName -y
+        7z a -tgzip $gzDestination $tarDestination -y
+        
+        Remove-Item $tarDestination
+
+        Remove-Item $archiveName -Recurse
+    }
+
+    echo "Created Zip file at $archiveName"
     echo "------------- Finished Zipping for $target -------------"
 }
+
+Remove-Item "$outputDir/static" -Recurse
 
 echo "Finished!"

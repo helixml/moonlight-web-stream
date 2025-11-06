@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  moonlight-web:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: moonlight-web
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "40000-40100:40000-40100/udp"
+    volumes:
+      - moonlight-server:/moonlight-web/server
+
+volumes:
+  moonlight-server:
+    name: moonlight-server

@@ -6,7 +6,8 @@ use crate::api_bindings::RtcIceServer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub credentials: String,
+    /// Use the ApiCredentials struct instead if you are verify the user!
+    pub credentials: Option<String>,
     #[serde(default = "data_path_default")]
     pub data_path: String,
     #[serde(default = "default_bind_address")]
@@ -71,7 +72,7 @@ pub struct PortRange {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            credentials: "default".to_string(),
+            credentials: Some("default".to_string()),
             data_path: data_path_default(),
             bind_address: default_bind_address(),
             moonlight_default_http_port: moonlight_default_http_port_default(),

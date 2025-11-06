@@ -113,19 +113,21 @@ impl TrackSampleVideoDecoder {
         }
     }
 
-    fn send_samples(
+    fn send_single_frame(
         samples: &mut Vec<BytesMut>,
         sender: &mut TrackLocalSender<SequencedTrackLocalStaticRTP>,
         payloader: &mut impl Payloader,
         timestamp: u32,
     ) {
-        for sample in samples.drain(..) {
+        let mut peekable = samples.drain(..).peekable();
+        while let Some(sample) = peekable.next() {
             let packets = match packetize(
                 payloader,
                 RTP_OUTBOUND_MTU,
                 0, // is set in the write fn
                 timestamp,
                 &sample.freeze(),
+                peekable.peek().is_none(),
             ) {
                 Ok(value) => value,
                 Err(err) => {
@@ -259,7 +261,7 @@ impl VideoDecoder for TrackSampleVideoDecoder {
                     self.samples.push(data);
                 }
 
-                Self::send_samples(&mut self.samples, &mut self.sender, payloader, timestamp);
+                Self::send_single_frame(&mut self.samples, &mut self.sender, payloader, timestamp);
             }
             // -- H265
             Some(VideoCodec::H265 {
@@ -277,7 +279,7 @@ impl VideoDecoder for TrackSampleVideoDecoder {
                     self.samples.push(data);
                 }
 
-                Self::send_samples(&mut self.samples, &mut self.sender, payloader, timestamp);
+                Self::send_single_frame(&mut self.samples, &mut self.sender, payloader, timestamp);
             }
             // -- AV1
             Some(VideoCodec::Av1 { annex_b, payloader }) => {
@@ -290,7 +292,7 @@ impl VideoDecoder for TrackSampleVideoDecoder {
                     self.samples.push(data);
                 }
 
-                Self::send_samples(&mut self.samples, &mut self.sender, payloader, timestamp);
+                Self::send_single_frame(&mut self.samples, &mut self.sender, payloader, timestamp);
             }
             None => {
                 // this shouldn't happen
@@ -322,6 +324,7 @@ fn packetize(
     sequence_number: u16,
     timestamp: u32,
     payload: &Bytes,
+    end_has_marker: bool,
 ) -> Result<Vec<Packet>, anyhow::Error> {
     let payloads = payloader.payload(mtu - 12, payload)?;
     let payloads_len = payloads.len();
@@ -332,7 +335,7 @@ fn packetize(
                 version: 2,
                 padding: false,
                 extension: false,
-                marker: i == payloads_len - 1,
+                marker: end_has_marker && i == payloads_len - 1,
                 sequence_number,
                 timestamp,
                 payload_type: 0, // Value is handled when writing

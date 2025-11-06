@@ -1,6 +1,5 @@
 use std::{
     ffi::{CStr, CString},
-    mem::transmute,
     os::raw::{c_char, c_int, c_schar, c_short, c_uchar, c_uint},
     ptr::null_mut,
     str::FromStr,
@@ -121,6 +120,10 @@ pub struct MoonlightStream {
     handle: Arc<Handle>,
 }
 
+fn to_c_char_array(bytes: [u8; 16]) -> [c_char; 16] {
+    bytes.map(|b| b as c_char)
+}
+
 impl MoonlightStream {
     pub(crate) fn start(
         handle: Arc<Handle>,
@@ -157,10 +160,6 @@ impl MoonlightStream {
                 serverCodecModeSupport: server_info.server_codec_mode_support.bits() as i32,
             };
 
-            let mut remote_input_aes_iv = [0u8; 16];
-            remote_input_aes_iv[0..4]
-                .copy_from_slice(&stream_config.remote_input_aes_iv.to_be_bytes());
-
             let mut stream_config = _STREAM_CONFIGURATION {
                 width: stream_config.width,
                 height: stream_config.height,
@@ -174,10 +173,12 @@ impl MoonlightStream {
                 colorSpace: stream_config.color_space as u32 as i32,
                 colorRange: stream_config.color_range as u32 as i32,
                 encryptionFlags: stream_config.encryption_flags.bits() as i32,
-                remoteInputAesKey: transmute::<[u8; 16], [c_char; 16]>(
-                    stream_config.remote_input_aes_key,
-                ),
-                remoteInputAesIv: transmute::<[u8; 16], [c_char; 16]>(remote_input_aes_iv),
+                remoteInputAesKey: to_c_char_array(stream_config.remote_input_aes_key),
+                remoteInputAesIv: to_c_char_array({
+                    let mut iv = [0u8; 16];
+                    iv[0..4].copy_from_slice(&stream_config.remote_input_aes_iv.to_be_bytes());
+                    iv
+                }),
             };
 
             // If something panics this will be dropped -> connection_guard is false again

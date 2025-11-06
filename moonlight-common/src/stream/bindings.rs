@@ -1,4 +1,4 @@
-use std::{ffi::CStr, time::Duration};
+use std::{ffi::CStr, fmt::Debug, time::Duration};
 
 use bitflags::bitflags;
 use moonlight_common_sys::limelight::{
@@ -38,6 +38,7 @@ use moonlight_common_sys::limelight::{
     VIDEO_FORMAT_MASK_YUV444, X_FLAG, Y_FLAG,
 };
 use num_derive::FromPrimitive;
+use thiserror::Error;
 
 // --------------- Stream ---------------
 bitflags! {
@@ -102,7 +103,7 @@ pub struct StreamConfiguration {
     /// AES encryption data for the remote input stream. This must be
     /// the same as what was passed as rikey and rikeyid
     /// in /launch and /resume requests.
-    pub remote_input_aes_iv: i32,
+    pub remote_input_aes_iv: u32,
 }
 
 bitflags! {
@@ -386,8 +387,15 @@ pub struct OpusMultistreamConfig {
     pub mapping: [u8; AUDIO_CONFIGURATION_MAX_CHANNEL_COUNT as usize],
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct AudioConfig(pub u32);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioConfig {
+    pub channel_count: u32,
+    pub channel_mask: u32,
+}
+
+#[derive(Debug, Error)]
+#[error("failed to deserialize audio config!")]
+pub struct FromRawAudioConfigError;
 
 impl AudioConfig {
     /// Specifies that the audio stream should be encoded in stereo (default)
@@ -401,7 +409,28 @@ impl AudioConfig {
     /// See https://docs.microsoft.com/en-us/windows-hardware/drivers/audio/channel-mask for channelMask values
     /// NOTE: Not all combinations are supported by GFE and/or this library.
     pub const fn new(channel_count: u32, channel_mask: u32) -> Self {
-        Self(channel_mask << 16 | channel_count << 8 | 0xCA)
+        Self {
+            channel_count,
+            channel_mask,
+        }
+    }
+
+    pub const fn from_raw(raw: u32) -> Result<Self, FromRawAudioConfigError> {
+        // Check the magic byte before decoding to make sure we got something that's actually
+        // a MAKE_AUDIO_CONFIGURATION()-based value and not something else like an older version
+        // hardcoded AUDIO_CONFIGURATION value from an earlier version of moonlight-common-c.
+        if (raw & 0xFF) != 0xCA {
+            return Err(FromRawAudioConfigError);
+        }
+
+        Ok(Self {
+            channel_count: (raw >> 8) & 0xFF,
+            channel_mask: (raw >> 16) & 0xFFFF,
+        })
+    }
+
+    pub fn raw(&self) -> u32 {
+        (self.channel_mask << 16) | (self.channel_count << 8) | 0xCA
     }
 }
 

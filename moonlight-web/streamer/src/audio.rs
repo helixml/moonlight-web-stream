@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
-use log::error;
+use log::{error, info, warn};
 use moonlight_common::stream::{
     audio::AudioDecoder,
     bindings::{AudioConfig, OpusMultistreamConfig},
@@ -51,10 +51,26 @@ impl OpusTrackSampleAudioDecoder {
 impl AudioDecoder for OpusTrackSampleAudioDecoder {
     fn setup(
         &mut self,
-        _audio_config: AudioConfig,
+        audio_config: AudioConfig,
         stream_config: OpusMultistreamConfig,
         _ar_flags: i32,
     ) -> i32 {
+        info!("[Stream] Audio setup: {audio_config:?}, {stream_config:?}");
+
+        const SUPPORTED_SAMPLE_RATES: &[u32] = &[80000, 12000, 16000, 24000, 48000];
+        if !SUPPORTED_SAMPLE_RATES.contains(&stream_config.sample_rate) {
+            warn!(
+                "[Stream] Audio could have problems because of the sample rate, Selected: {}, Expected one of: {SUPPORTED_SAMPLE_RATES:?}",
+                stream_config.sample_rate
+            );
+        }
+        if audio_config != self.config() {
+            warn!(
+                "[Stream] A different audio configuration than requested was selected, Expected: {:?}, Found: {audio_config:?}",
+                self.config()
+            );
+        }
+
         if let Err(err) = self.decoder.blocking_create_track(
             TrackLocalStaticSample::new(
                 RTCRtpCodecCapability {

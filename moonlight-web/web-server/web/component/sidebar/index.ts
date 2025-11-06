@@ -6,16 +6,12 @@ export interface Sidebar extends Component {
     unextend(): void
 }
 
-let sidebarMounted = false
 let sidebarExtended = false
 const sidebarRoot = document.getElementById("sidebar-root")
 const sidebarParent = document.getElementById("sidebar-parent")
 const sidebarButton = document.getElementById("sidebar-button")
 
 sidebarButton?.addEventListener("click", toggleSidebar)
-setSidebarStyle({
-    edge: "left"
-})
 
 let sidebarComponent: Sidebar | null = null
 
@@ -53,23 +49,31 @@ export function isSidebarExtended(): boolean {
 }
 
 export function setSidebar(sidebar: Sidebar | null) {
-    if (sidebarParent == null) {
+    if (sidebarParent == null || sidebarRoot == null) {
         showErrorPopup("failed to get sidebar")
         return
     }
 
-    if (sidebarMounted) {
+    if (sidebarComponent) {
         // unmount
         sidebarComponent?.unmount(sidebarParent)
-        sidebarMounted = false
+        sidebarComponent = null
+        sidebarRoot.style.visibility = "hidden"
     }
     if (sidebar) {
         // mount
         sidebarComponent = sidebar
         sidebar?.mount(sidebarParent)
+        sidebarRoot.style.visibility = "visible"
     }
 }
 
 export function getSidebarRoot(): HTMLElement | null {
     return sidebarRoot
 }
+
+// initialize defaults
+setSidebarStyle({
+    edge: "left"
+})
+setSidebar(null)

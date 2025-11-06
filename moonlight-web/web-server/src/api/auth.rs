@@ -4,9 +4,14 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     http::header,
     middleware::Next,
+    web::Data,
 };
+use log::{error, warn};
 
-pub struct ApiCredentials(pub String);
+#[derive(Clone)]
+pub struct ApiCredentials {
+    pub credentials: Option<String>,
+}
 
 pub async fn auth_middleware(
     req: ServiceRequest,
@@ -19,7 +24,22 @@ pub async fn auth_middleware(
         return next.call(req).await;
     }
 
-    if authenticate(&req) {
+    let Some(credentials) = req.app_data::<Data<ApiCredentials>>() else {
+        let response = HttpResponse::InternalServerError().finish();
+
+        error!("No ApiCredentials present in the app. Cannot verify request -> blocking request.");
+
+        return Ok(req.into_response(response));
+    };
+
+    let authenticated = match credentials.authenticate(&req) {
+        Err(err) => {
+            return Ok(req.into_response(err));
+        }
+        Ok(value) => value,
+    };
+
+    if authenticated {
         next.call(req).await
     } else {
         let response = HttpResponse::Unauthorized().finish();
@@ -28,23 +48,36 @@ pub async fn auth_middleware(
     }
 }
 
-fn authenticate(request: &ServiceRequest) -> bool {
-    let Some(credentials) = request.app_data::<ApiCredentials>() else {
-        return false;
-    };
+impl ApiCredentials {
+    fn authenticate(&self, request: &ServiceRequest) -> Result<bool, HttpResponse> {
+        let Some(value) = request
+            .head()
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+        else {
+            return Ok(self.authenticate_with_credentials(None));
+        };
 
-    let Some(value) = request
-        .head()
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
+        let Some((auth_type, request_credentials)) = value.split_once(" ") else {
+            warn!("[Auth] Received malformed Authorization header!");
+            return Err(HttpResponse::BadRequest().finish());
+        };
 
-    let Some((auth_type, request_credentials)) = value.split_once(" ") else {
-        todo!()
-    };
+        Ok(auth_type == "Bearer" && self.authenticate_with_credentials(Some(request_credentials)))
+    }
 
-    auth_type == "Bearer" && request_credentials == credentials.0.as_str()
+    pub fn enable_credential_authentication(&self) -> bool {
+        self.credentials.is_some()
+    }
+    pub fn authenticate_with_credentials(&self, request_credentials: Option<&str>) -> bool {
+        let Some(credentials) = self.credentials.as_ref() else {
+            // This is the case when no credentials / auth is requested by the user
+            // -> allow the request
+
+            return true;
+        };
+
+        request_credentials == Some(credentials)
+    }
 }

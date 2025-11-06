@@ -15,7 +15,7 @@ use moonlight_common::{
     pair::ClientAuth,
     stream::{
         MoonlightInstance, MoonlightStream,
-        bindings::{ColorRange, HostFeatures},
+        bindings::{ColorRange, EncryptionFlags, HostFeatures},
     },
 };
 use pem::Pem;
@@ -783,6 +783,7 @@ impl StreamConnection {
                 },
                 self.settings.bitrate,
                 self.settings.packet_size,
+                EncryptionFlags::all(),
                 connection_listener,
                 video_decoder,
                 audio_decoder,

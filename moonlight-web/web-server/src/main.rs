@@ -12,7 +12,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use simplelog::{ColorChoice, TermLogger, TerminalMode};
 
 use crate::{
-    api::api_service,
+    api::{api_service, auth::ApiCredentials},
     data::{ApiData, RuntimeApiData},
     web::{web_config_js_service, web_service},
 };
@@ -57,11 +57,15 @@ async fn exit() -> Result<(), anyhow::Error> {
 async fn main2() -> Result<(), anyhow::Error> {
     // Load Config
     let config = read_or_default::<Config>("./server/config.json").await;
-    if config.credentials == "default" {
+    if config.credentials.as_deref() == Some("default") {
         info!("Enter your credentials in the config (server/config.json)");
 
         return Ok(());
     }
+    let credentials = Data::new(ApiCredentials {
+        credentials: config.credentials.clone(),
+    });
+
     let config = Data::new(config);
 
     // Load Data
@@ -75,7 +79,8 @@ async fn main2() -> Result<(), anyhow::Error> {
         move || {
             App::new()
                 .app_data(config.clone())
-                .service(api_service(data.clone(), config.credentials.to_string(), config.clone()))
+                .app_data(credentials.clone())  // Upstream: Inject credentials via app_data
+                .service(api_service(data.clone()))  // Upstream: No credentials parameter
                 .service(web_config_js_service())
                 .service(web_service())
         }

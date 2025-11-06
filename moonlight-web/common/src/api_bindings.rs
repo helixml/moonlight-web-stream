@@ -15,6 +15,7 @@ const EXPORT_PATH: &str = "../../web-server/web/api_bindings.ts";
 #[derive(Serialize, Deserialize, Debug, TS, Clone)]
 #[ts(export, export_to = EXPORT_PATH)]
 pub struct ConfigJs {
+    pub enable_credential_authentication: bool,
     pub path_prefix: String,
 }
 
@@ -248,10 +249,10 @@ pub enum SessionMode {
 #[ts(export, export_to = EXPORT_PATH)]
 pub enum StreamClientMessage {
     AuthenticateAndInit {
-        credentials: String,
-        session_id: String,    // NEW: session identifier for persistence
-        mode: SessionMode,     // NEW: how to handle existing sessions
-        client_unique_id: Option<String>,  // NEW: unique client ID for Moonlight protocol (enables multi-app streaming)
+        credentials: Option<String>,  // Optional for public streaming (upstream change)
+        session_id: String,    // Session identifier for persistence (our change)
+        mode: SessionMode,     // How to handle existing sessions (our change)
+        client_unique_id: Option<String>,  // Unique client ID for auto-join (our change)
         host_id: u32,
         app_id: u32,
         bitrate: u32,

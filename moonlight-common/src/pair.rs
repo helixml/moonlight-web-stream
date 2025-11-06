@@ -172,7 +172,8 @@ pub fn generate_new_client() -> Result<ClientAuth, ErrorStack> {
     })
 }
 
-pub struct PairSuccess {
+pub struct PairSuccess<C: RequestClient> {
+    pub client: C,
     pub server_certificate: Pem,
 }
 
@@ -207,7 +208,7 @@ pub async fn host_pair<C: RequestClient>(
     device_name: &str,
     server_version: ServerVersion,
     pin: PairPin,
-) -> Result<PairSuccess, PairError<C::Error>> {
+) -> Result<PairSuccess<C>, PairError<C::Error>> {
     let client_cert = X509::from_der(client_certificate_pem.contents())?;
     let client_private_key = PKey::private_key_from_der(client_private_key_pem.contents())?;
 
@@ -368,16 +369,15 @@ pub async fn host_pair<C: RequestClient>(
     }
 
     // Required for us to show as paired
-    // Create new HTTPS client with mutual TLS certificates for Phase 5
-    let mut https_client = C::with_certificates(
+    let mut new_client = C::with_certificates(
         client_private_key_pem,
         client_certificate_pem,
         &server_cert_pem,
     )
-    .map_err(|e| PairError::Api(ApiError::RequestClient(e)))?;
+    .map_err(|err| PairError::Api(ApiError::RequestClient(err)))?;
 
     let server_response5 = host_pair5(
-        &mut https_client,
+        &mut new_client,
         https_address,
         client_info,
         ClientPairRequest5 { device_name },
@@ -391,6 +391,7 @@ pub async fn host_pair<C: RequestClient>(
     }
 
     Ok(PairSuccess {
+        client: new_client,
         server_certificate: server_cert_pem,
     })
 }

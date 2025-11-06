@@ -4,7 +4,7 @@ import { showErrorPopup } from "./component/error.js";
 import { getStreamerSize, InfoEvent, Stream } from "./stream/index.js"
 import { getModalBackground, Modal, showMessage, showModal } from "./component/modal/index.js";
 import { getSidebarRoot, setSidebar, setSidebarExtended, setSidebarStyle, Sidebar } from "./component/sidebar/index.js";
-import { defaultStreamInputConfig, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input.js";
+import { defaultStreamInputConfig, MouseMode, ScreenKeyboardSetVisibleEvent, StreamInputConfig } from "./stream/input.js";
 import { defaultStreamSettings, getLocalStreamSettings, StreamSettings } from "./component/settings_menu.js";
 import { SelectComponent } from "./component/input.js";
 import { getStandardVideoFormats, getSupportedVideoFormats } from "./stream/video.js";
@@ -74,6 +74,11 @@ class ViewerApp implements Component {
 
     private streamerSize: [number, number]
 
+    private inputConfig: StreamInputConfig = defaultStreamInputConfig()
+    private previousMouseMode: MouseMode
+    private toggleFullscreenWithKeybind: boolean
+    private hasShownFullscreenEscapeWarning = false
+
     constructor(api: Api, hostId: number, appId: number) {
         this.api = api
 
@@ -87,6 +92,8 @@ class ViewerApp implements Component {
         let browserWidth = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0)
         let browserHeight = Math.max(document.documentElement.clientHeight || 0, window.innerHeight || 0)
 
+        this.previousMouseMode = this.inputConfig.mouseMode
+        this.toggleFullscreenWithKeybind = settings.toggleFullscreenWithKeybind
         this.startStream(hostId, appId, settings, [browserWidth, browserHeight])
 
         this.streamerSize = getStreamerSize(settings, [browserWidth, browserHeight])
@@ -99,26 +106,15 @@ class ViewerApp implements Component {
         this.videoElement.disablePictureInPicture = true
         this.videoElement.playsInline = true
         this.videoElement.muted = true
-        this.videoElement.tabIndex = 0
 
-        this.div.tabIndex = 0
         this.div.appendChild(this.videoElement)
 
         // Configure input
+        this.addListeners(document)
+        this.addListeners(document.getElementById("input") as HTMLDivElement)
 
-        document.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
-        document.addEventListener("keyup", this.onKeyUp.bind(this), { passive: false })
-
-        document.addEventListener("mousedown", this.onMouseButtonDown.bind(this), { passive: false })
-        document.addEventListener("mouseup", this.onMouseButtonUp.bind(this), { passive: false })
-        document.addEventListener("mousemove", this.onMouseMove.bind(this), { passive: false })
-        document.addEventListener("wheel", this.onMouseWheel.bind(this), { passive: false })
-        document.addEventListener("contextmenu", this.onContextMenu.bind(this), { passive: false })
-
-        document.addEventListener("touchstart", this.onTouchStart.bind(this), { passive: false })
-        document.addEventListener("touchend", this.onTouchEnd.bind(this), { passive: false })
-        document.addEventListener("touchcancel", this.onTouchCancel.bind(this), { passive: false })
-        document.addEventListener("touchmove", this.onTouchMove.bind(this), { passive: false })
+        document.addEventListener("pointerlockchange", this.onPointerLockChange.bind(this))
+        document.addEventListener("fullscreenchange", this.onFullscreenChange.bind(this))
 
         window.addEventListener("gamepadconnected", this.onGamepadConnect.bind(this))
         window.addEventListener("gamepaddisconnected", this.onGamepadDisconnect.bind(this))
@@ -128,6 +124,21 @@ class ViewerApp implements Component {
                 this.onGamepadAdd(gamepad)
             }
         }
+    }
+    private addListeners(element: GlobalEventHandlers) {
+        element.addEventListener("keydown", this.onKeyDown.bind(this), { passive: false })
+        element.addEventListener("keyup", this.onKeyUp.bind(this), { passive: false })
+
+        element.addEventListener("mousedown", this.onMouseButtonDown.bind(this), { passive: false })
+        element.addEventListener("mouseup", this.onMouseButtonUp.bind(this), { passive: false })
+        element.addEventListener("mousemove", this.onMouseMove.bind(this), { passive: false })
+        element.addEventListener("wheel", this.onMouseWheel.bind(this), { passive: false })
+        element.addEventListener("contextmenu", this.onContextMenu.bind(this), { passive: false })
+
+        element.addEventListener("touchstart", this.onTouchStart.bind(this), { passive: false })
+        element.addEventListener("touchend", this.onTouchEnd.bind(this), { passive: false })
+        element.addEventListener("touchcancel", this.onTouchCancel.bind(this), { passive: false })
+        element.addEventListener("touchmove", this.onTouchMove.bind(this), { passive: false })
     }
 
     private async startStream(hostId: number, appId: number, settings: StreamSettings, browserSize: [number, number]) {
@@ -172,7 +183,14 @@ class ViewerApp implements Component {
         }
     }
 
+    private focusInput() {
+        const inputElement = document.getElementById("input") as HTMLDivElement
+        inputElement.focus()
+    }
+
     onUserInteraction() {
+        this.focusInput()
+
         this.videoElement.muted = false
     }
     private onScreenKeyboardSetVisible(event: ScreenKeyboardSetVisibleEvent) {
@@ -189,18 +207,52 @@ class ViewerApp implements Component {
         }
     }
 
+    // Input
+    getInputConfig(): StreamInputConfig {
+        return this.inputConfig
+    }
+    setInputConfig(config: StreamInputConfig) {
+        Object.assign(this.inputConfig, config)
+
+        this.stream?.getInput().setConfig(this.inputConfig)
+    }
+
     // Keyboard
     onKeyDown(event: KeyboardEvent) {
         this.onUserInteraction()
 
         event.preventDefault()
         this.stream?.getInput().onKeyDown(event)
+
+        event.stopPropagation()
     }
+
+    private isTogglingFullscreenWithKeybind: "waitForCtrl" | "makingFullscreen" | "none" = "none"
     onKeyUp(event: KeyboardEvent) {
         this.onUserInteraction()
 
         event.preventDefault()
         this.stream?.getInput().onKeyUp(event)
+        event.stopPropagation()
+
+        if (this.toggleFullscreenWithKeybind && this.isTogglingFullscreenWithKeybind == "none" && event.ctrlKey && event.shiftKey && event.code == "KeyI") {
+            this.isTogglingFullscreenWithKeybind = "waitForCtrl"
+        }
+        if (this.isTogglingFullscreenWithKeybind == "waitForCtrl" && (event.code == "ControlRight" || event.code == "ControlLeft")) {
+            this.isTogglingFullscreenWithKeybind = "makingFullscreen";
+
+            (async () => {
+                if (this.isFullscreen()) {
+                    await this.exitPointerLock()
+                    await this.exitFullscreen()
+                } else {
+                    await this.requestFullscreen()
+                    await this.requestPointerLock()
+                }
+
+                this.isTogglingFullscreenWithKeybind = "none"
+            })()
+        }
     }
 
     // Mouse
@@ -209,23 +261,33 @@ class ViewerApp implements Component {
 
         event.preventDefault()
         this.stream?.getInput().onMouseDown(event, this.getStreamRect());
+
+        event.stopPropagation()
     }
     onMouseButtonUp(event: MouseEvent) {
         this.onUserInteraction()
 
         event.preventDefault()
         this.stream?.getInput().onMouseUp(event)
+
+        event.stopPropagation()
     }
     onMouseMove(event: MouseEvent) {
         event.preventDefault()
         this.stream?.getInput().onMouseMove(event, this.getStreamRect())
+
+        event.stopPropagation()
     }
     onMouseWheel(event: WheelEvent) {
         event.preventDefault()
         this.stream?.getInput().onMouseWheel(event)
+
+        event.stopPropagation()
     }
     onContextMenu(event: MouseEvent) {
         event.preventDefault()
+
+        event.stopPropagation()
     }
 
     // Touch
@@ -234,18 +296,24 @@ class ViewerApp implements Component {
 
         event.preventDefault()
         this.stream?.getInput().onTouchStart(event, this.getStreamRect())
+
+        event.stopPropagation()
     }
     onTouchEnd(event: TouchEvent) {
         this.onUserInteraction()
 
         event.preventDefault()
         this.stream?.getInput().onTouchEnd(event, this.getStreamRect())
+
+        event.stopPropagation()
     }
     onTouchCancel(event: TouchEvent) {
         this.onUserInteraction()
 
         event?.preventDefault()
         this.stream?.getInput().onTouchCancel(event, this.getStreamRect())
+
+        event.stopPropagation()
     }
     onTouchUpdate() {
         this.stream?.getInput().onTouchUpdate(this.getStreamRect())
@@ -255,6 +323,8 @@ class ViewerApp implements Component {
     onTouchMove(event: TouchEvent) {
         event.preventDefault()
         this.stream?.getInput().onTouchMove(event, this.getStreamRect())
+
+        event.stopPropagation()
     }
 
     // Gamepad
@@ -272,6 +342,147 @@ class ViewerApp implements Component {
 
         window.requestAnimationFrame(this.onGamepadUpdate.bind(this))
     }
+
+    // Fullscreen
+    async requestFullscreen() {
+        const body = document.body
+        if (body) {
+            if (!("requestFullscreen" in body && typeof body.requestFullscreen == "function")) {
+                await showMessage("Fullscreen is not supported by your browser!")
+
+                return
+            }
+
+            this.focusInput()
+
+            if (!this.isFullscreen()) {
+                try {
+                    await body.requestFullscreen({
+                        navigationUI: "hide"
+                    })
+                } catch (e) {
+                    console.warn("failed to request fullscreen", e)
+                }
+            }
+
+            if ("keyboard" in navigator && navigator.keyboard && "lock" in navigator.keyboard) {
+                await navigator.keyboard.lock()
+
+                if (!this.hasShownFullscreenEscapeWarning) {
+                    await showMessage("To exit Fullscreen you'll have to hold ESC for a few seconds.")
+                }
+                this.hasShownFullscreenEscapeWarning = true
+            }
+
+            if (this.getStream()?.getInput().getConfig().mouseMode == "relative") {
+                await this.requestPointerLock()
+            }
+
+            try {
+                if (screen && "orientation" in screen) {
+                    const orientation = screen.orientation
+
+                    if ("lock" in orientation && typeof orientation.lock == "function") {
+                        await orientation.lock("landscape")
+                    }
+                }
+            } catch (e) {
+                console.warn("failed to set orientation to landscape", e)
+            }
+        } else {
+            console.warn("root element not found")
+        }
+    }
+    async exitFullscreen() {
+        if ("keyboard" in navigator && navigator.keyboard && "unlock" in navigator.keyboard) {
+            await navigator.keyboard.unlock()
+        }
+
+        if ("exitFullscreen" in document && typeof document.exitFullscreen == "function") {
+            await document.exitFullscreen()
+        }
+    }
+    isFullscreen(): boolean {
+        return "fullscreenElement" in document && !!document.fullscreenElement
+    }
+    private async onFullscreenChange() {
+        this.checkFullyImmersed()
+    }
+
+    // Pointer Lock
+    async requestPointerLock(errorIfNotFound: boolean = false) {
+        this.previousMouseMode = this.inputConfig.mouseMode
+
+        const inputElement = document.getElementById("input") as HTMLDivElement
+
+        if (inputElement && "requestPointerLock" in inputElement && typeof inputElement.requestPointerLock == "function") {
+            this.focusInput()
+
+            this.inputConfig.mouseMode = "relative"
+            this.setInputConfig(this.inputConfig)
+
+            setSidebarExtended(false)
+
+            const onLockError = () => {
+                document.removeEventListener("pointerlockerror", onLockError)
+
+                // Fallback: try to request pointer lock without options
+                inputElement.requestPointerLock()
+            }
+
+            document.addEventListener("pointerlockerror", onLockError, { once: true })
+
+            try {
+                let promise = inputElement.requestPointerLock({
+                    unadjustedMovement: true
+                })
+
+                if (promise) {
+                    await promise
+                } else {
+                    inputElement.requestPointerLock()
+                }
+            } catch (error) {
+                // Some platforms do not support unadjusted movement. If you
+                // would like PointerLock anyway, request again.
+                if (error instanceof Error && error.name == "NotSupportedError") {
+                    inputElement.requestPointerLock()
+                } else {
+                    throw error
+                }
+            } finally {
+                document.removeEventListener("pointerlockerror", onLockError)
+            }
+
+        } else if (errorIfNotFound) {
+            await showMessage("Pointer Lock not supported")
+        }
+    }
+    async exitPointerLock() {
+        if ("exitPointerLock" in document && typeof document.exitPointerLock == "function") {
+            document.exitPointerLock()
+        }
+    }
+    private onPointerLockChange() {
+        this.checkFullyImmersed()
+
+        if (!document.pointerLockElement) {
+            this.inputConfig.mouseMode = this.previousMouseMode
+            this.setInputConfig(this.inputConfig)
+        }
+    }
+
+    // -- Fully immersed Fullscreen -> Fullscreen API + Pointer Lock
+    private checkFullyImmersed() {
+        if ("pointerLockElement" in document && document.pointerLockElement &&
+            "fullscreenElement" in document && document.fullscreenElement) {
+            // We're fully immersed -> remove sidebar
+            setSidebar(null)
+        } else {
+            setSidebar(this.sidebar)
+        }
+    }
+
 
     mount(parent: HTMLElement): void {
         parent.appendChild(this.div)
@@ -444,8 +655,6 @@ class ViewerSidebar implements Component, Sidebar {
     private mouseMode: SelectComponent
     private touchMode: SelectComponent
 
-    private config: StreamInputConfig = defaultStreamInputConfig()
-
     constructor(app: ViewerApp) {
         this.app = app
 
@@ -472,19 +681,7 @@ class ViewerSidebar implements Component, Sidebar {
         // Pointer Lock
         this.lockMouseButton.innerText = "Lock Mouse"
         this.lockMouseButton.addEventListener("click", async () => {
-            setSidebarExtended(false)
-
-            const root = document.getElementById("root")
-
-            if (root) {
-                if ("requestPointerLock" in root && typeof root.requestPointerLock == "function") {
-                    await root.requestPointerLock()
-                } else {
-                    await showMessage("Pointer Lock not supported")
-                }
-            } else {
-                console.warn("root element not found")
-            }
+            await this.app.requestPointerLock(true)
         })
         this.buttonDiv.appendChild(this.lockMouseButton)
 
@@ -505,36 +702,14 @@ class ViewerSidebar implements Component, Sidebar {
         // Fullscreen
         this.fullscreenButton.innerText = "Fullscreen"
         this.fullscreenButton.addEventListener("click", async () => {
-            const root = document.getElementById("root")
-            if (root) {
-                await root.requestFullscreen({
-                    navigationUI: "hide"
-                })
-
-                if (this.mouseMode.getValue() == "relative") {
-                    if ("requestPointerLock" in root && typeof root.requestPointerLock == "function") {
-                        await root.requestPointerLock()
-                    }
-                } else {
-                    console.warn("failed to request pointer lock while requesting fullscreen")
-                }
-
-                try {
-                    if (screen && "orientation" in screen) {
-                        const orientation = screen.orientation
-
-                        if ("lock" in orientation && typeof orientation.lock == "function") {
-                            await orientation.lock("landscape")
-                        }
-                    }
-                } catch (e) {
-                    console.warn("failed to set orientation to landscape", e)
-                }
+            if (this.app.isFullscreen()) {
+                await this.app.exitFullscreen()
             } else {
-                console.warn("root element not found")
+                await this.app.requestFullscreen()
             }
         })
         this.buttonDiv.appendChild(this.fullscreenButton)
+
 
         // Select Mouse Mode
         this.mouseMode = new SelectComponent("mouseMode", [
@@ -543,7 +718,7 @@ class ViewerSidebar implements Component, Sidebar {
             { value: "pointAndDrag", name: "Point and Drag" }
         ], {
             displayName: "Mouse Mode",
-            preSelectedOption: this.config.mouseMode
+            preSelectedOption: this.app.getInputConfig().mouseMode
         })
         this.mouseMode.addChangeListener(this.onMouseModeChange.bind(this))
         this.mouseMode.mount(this.div)
@@ -555,7 +730,7 @@ class ViewerSidebar implements Component, Sidebar {
             { value: "pointAndDrag", name: "Point and Drag" }
         ], {
             displayName: "Touch Mode",
-            preSelectedOption: this.config.touchMode
+            preSelectedOption: this.app.getInputConfig().touchMode
         })
         this.touchMode.addChangeListener(this.onTouchModeChange.bind(this))
         this.touchMode.mount(this.div)
@@ -582,14 +757,16 @@ class ViewerSidebar implements Component, Sidebar {
 
     // -- Mouse Mode
     private onMouseModeChange() {
-        this.config.mouseMode = this.mouseMode.getValue() as any
-        this.app.getStream()?.getInput().setConfig(this.config)
+        const config = this.app.getInputConfig()
+        config.mouseMode = this.mouseMode.getValue() as any
+        this.app.setInputConfig(config)
     }
 
     // -- Touch Mode
     private onTouchModeChange() {
-        this.config.touchMode = this.touchMode.getValue() as any
-        this.app.getStream()?.getInput().setConfig(this.config)
+        const config = this.app.getInputConfig()
+        config.touchMode = this.touchMode.getValue() as any
+        this.app.setInputConfig(config)
     }
 
     extended(): void {

@@ -1,5 +1,4 @@
 use std::fmt::Write as _;
-use std::io::Write as _;
 
 use roxmltree::Document;
 use uuid::fmt::Hyphenated;
@@ -26,7 +25,7 @@ pub struct ClientStreamRequest {
     pub gamepads_attached_mask: i32,
     pub gamepads_persist_after_disconnect: bool,
     pub ri_key: [u8; 16usize],
-    pub ri_key_id: i32,
+    pub ri_key_id: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -144,12 +143,9 @@ async fn inner_launch_host<C: RequestClient>(
         str::from_utf8(&ri_key_str_bytes).expect("valid ri key str"),
     ));
 
-    let mut ri_key_id_str_bytes = [0u8; 12];
-    write!(&mut ri_key_id_str_bytes[..], "{}", request.ri_key_id).expect("write ri key id");
-    query_params.push(query_param(
-        "rikeyid",
-        str::from_utf8(&ri_key_id_str_bytes).expect("valid ri key id str"),
-    ));
+    let mut ri_key_id_str_bytes = [0; 11];
+    let ri_key_id_str = u32_to_str(request.ri_key_id, &mut ri_key_id_str_bytes);
+    query_params.push(query_param("rikeyid", ri_key_id_str));
 
     query_params.push(query_param(
         "localAudioPlayMode",

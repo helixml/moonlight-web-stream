@@ -29,6 +29,7 @@ where
                 let header = NalHeader::parse(header);
 
                 // Don't skip SEI - it contains critical color metadata!
+                // Upstream skips SEI but we need it for correct color reproduction
                 // if header.nal_unit_type == NalUnitType::Sei {
                 //     continue;
                 // }

@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  moonlight-web:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: moonlight-web
+    restart: unless-stopped
+    depends_on:
+      - turn
+    ports:
+      - "8080:8080"
+      - "40000-40100:40000-40100/udp"
+    volumes:
+      - moonlight-server:/moonlight-web/server
+
+  turn:
+    image: coturn/coturn:latest
+    container_name: turn
+    restart: unless-stopped
+    command: >
+      --log-file=stdout --external-ip=$(detect-external-ip) --realm=myrealm  --lt-cred-mech --user=${TURN_USER}:${TURN_PASS} --verbose --min-port=55000 --max-port=55100
+    ports:
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
+      - "5349:5349/tcp"
+      - "443:5349/tcp" # allow TURN-TLS over HTTPS port
+      - "55000-55100:55000-55100/udp"
+      - "55000-55100:55000-55100/tcp"
+
+volumes:
+  moonlight-server:
+    name: moonlight-server

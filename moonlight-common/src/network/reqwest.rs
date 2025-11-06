@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
+use log::debug;
 use pem::Pem;
 use reqwest::{Certificate, Client, ClientBuilder, Identity};
 use thiserror::Error;
@@ -26,12 +27,13 @@ pub type ReqwestApiError = ApiError<ReqwestError>;
 fn default_builder() -> ClientBuilder {
     ClientBuilder::new()
         .use_native_tls()
-        .connect_timeout(Duration::from_secs(5))
+        .connect_timeout(Duration::from_secs(1))
+        .timeout(Duration::from_secs(90))
         // https://github.com/seanmonstar/reqwest/issues/2021
         .pool_max_idle_per_host(0)
 }
 fn timeout_builder() -> ClientBuilder {
-    default_builder().timeout(Duration::from_secs(10))
+    default_builder().timeout(Duration::from_secs(2))
 }
 
 fn build_url(
@@ -45,6 +47,8 @@ fn build_url(
     let authority = format!("{protocol}://{hostport}/{path}");
     let url = Url::parse_with_params(&authority, query_params)?;
 
+    debug!("Request: {url}");
+
     Ok(url)
 }
 
@@ -55,11 +59,7 @@ impl RequestClient for Client {
     type Bytes = Bytes;
 
     fn with_defaults_long_timeout() -> Result<Self, Self::Error> {
-        Ok(default_builder()
-            .timeout(Duration::from_secs(100))
-            // Accept self-signed certificates for internal Wolf communication
-            .danger_accept_invalid_certs(true)
-            .build()?)
+        Ok(default_builder().build()?)
     }
     fn with_defaults() -> Result<Self, Self::Error> {
         Ok(timeout_builder().build()?)

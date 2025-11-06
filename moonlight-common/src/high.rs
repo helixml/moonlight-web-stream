@@ -328,6 +328,7 @@ where
         let http_address = self.http_address();
         let https_address = self.https_address().await?;
         let server_version = self.version().await?;
+        let https_address = self.https_address().await?;
 
         let client_info = ClientInfo {
             unique_id: &self.client_unique_id,
@@ -336,7 +337,10 @@ where
 
         let mut client = C::with_defaults_long_timeout().map_err(ApiError::RequestClient)?;
 
-        let PairSuccess { server_certificate } = host_pair(
+        let PairSuccess {
+            server_certificate,
+            client: new_client,
+        } = host_pair(
             &mut client,
             &http_address,
             &https_address,
@@ -349,9 +353,7 @@ where
         )
         .await?;
 
-        self.client =
-            C::with_certificates(&auth.private_key, &auth.certificate, &server_certificate)
-                .map_err(|err| HostError::Api(ApiError::RequestClient(err)))?;
+        self.client = new_client;
 
         self.paired = Some(Paired {
             client_private_key: auth.private_key.clone(),
@@ -578,6 +580,7 @@ mod stream {
             color_range: ColorRange,
             bitrate: u32,
             packet_size: u32,
+            encryption_flags: EncryptionFlags,
             connection_listener: impl ConnectionListener + Send + Sync + 'static,
             video_decoder: impl VideoDecoder + Send + Sync + 'static,
             audio_decoder: impl AudioDecoder + Send + Sync + 'static,
@@ -625,7 +628,7 @@ mod stream {
 
             let mut aes_iv = [0u8; 4];
             rand_bytes(&mut aes_iv).map_err(PairError::from)?;
-            let aes_iv = i32::from_be_bytes(aes_iv);
+            let aes_iv = u32::from_be_bytes(aes_iv);
 
             let request = ClientStreamRequest {
                 app_id,
@@ -694,12 +697,12 @@ mod stream {
                     bitrate: bitrate as i32,
                     packet_size: packet_size as i32,
                     streaming_remotely: StreamingConfig::Auto,
-                    audio_configuration: audio_decoder.config().0 as i32,
+                    audio_configuration: audio_decoder.config().raw() as i32,
                     supported_video_formats: video_decoder.supported_formats(),
                     client_refresh_rate_x100: (fps * 100) as i32,
                     color_space,
                     color_range,
-                    encryption_flags: EncryptionFlags::empty(),
+                    encryption_flags,
                     remote_input_aes_key: aes_key,
                     remote_input_aes_iv: aes_iv,
                 };
