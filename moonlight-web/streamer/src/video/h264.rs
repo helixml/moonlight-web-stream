@@ -112,9 +112,11 @@ where
                 header.copy_from_slice(&annex_b.full[header_range.clone()]);
                 let header = NalHeader::parse(header);
 
-                if header.nal_unit_type == NalUnitType::Sei {
-                    continue;
-                }
+                // Don't skip SEI - it contains critical color metadata!
+                // Skipping SEI causes color reproduction issues (flickering, wrong colors)
+                // if header.nal_unit_type == NalUnitType::Sei {
+                //     continue;
+                // }
 
                 let payload_range = header_range.end..annex_b.payload_range.end;
 
