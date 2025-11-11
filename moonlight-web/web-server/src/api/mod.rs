@@ -437,10 +437,27 @@ struct SessionInfo {
     client_unique_id: Option<String>,
     mode: SessionMode,
     has_websocket: bool,
+    streamer_pid: Option<u32>,
+    streamer_alive: bool,
 }
 
 #[derive(Debug, Serialize)]
 struct GetSessionsResponse {
+    sessions: Vec<SessionInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct ClientInfo {
+    client_unique_id: String,
+    has_certificate: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminStatusResponse {
+    total_clients: usize,
+    total_sessions: usize,
+    active_websockets: usize,
+    clients: Vec<ClientInfo>,
     sessions: Vec<SessionInfo>,
 }
 
@@ -455,15 +472,82 @@ async fn get_sessions(
         let ws_lock = stream_session.websocket.lock().await;
         let has_websocket = ws_lock.is_some();
 
+        // Check streamer process state
+        let mut streamer_lock = stream_session.streamer.lock().await;
+        let streamer_pid = streamer_lock.id();
+        let streamer_alive = streamer_lock.try_wait().unwrap_or(None).is_none(); // None = still running
+
         sessions.push(SessionInfo {
             session_id: session_id.clone(),
             client_unique_id: stream_session.client_unique_id.clone(),
             mode: stream_session.mode,
             has_websocket,
+            streamer_pid,
+            streamer_alive,
         });
     }
 
     Either::Left(Json(GetSessionsResponse { sessions }))
+}
+
+#[get("/admin/status")]
+async fn get_admin_status(
+    data: Data<RuntimeApiData>,
+) -> Either<Json<AdminStatusResponse>, HttpResponse> {
+    let sessions_lock = data.sessions.read().await;
+    let certs_lock = data.client_certificates.read().await;
+
+    let mut sessions = Vec::new();
+    let mut active_ws_count = 0;
+    let mut zombie_count = 0; // Sessions with dead process but not cleaned up
+
+    for (session_id, stream_session) in sessions_lock.iter() {
+        let ws_lock = stream_session.websocket.lock().await;
+        let has_websocket = ws_lock.is_some();
+
+        if has_websocket {
+            active_ws_count += 1;
+        }
+
+        // Check streamer process state
+        let mut streamer_lock = stream_session.streamer.lock().await;
+        let streamer_pid = streamer_lock.id();
+        let streamer_alive = streamer_lock.try_wait().unwrap_or(None).is_none(); // None = still running
+
+        if !streamer_alive {
+            zombie_count += 1;
+        }
+
+        sessions.push(SessionInfo {
+            session_id: session_id.clone(),
+            client_unique_id: stream_session.client_unique_id.clone(),
+            mode: stream_session.mode,
+            has_websocket,
+            streamer_pid,
+            streamer_alive,
+        });
+    }
+
+    let clients: Vec<ClientInfo> = certs_lock
+        .iter()
+        .map(|(client_id, _cert)| ClientInfo {
+            client_unique_id: client_id.clone(),
+            has_certificate: true,
+        })
+        .collect();
+
+    // Log warning if zombie sessions detected
+    if zombie_count > 0 {
+        warn!("[Admin Status] {} zombie sessions detected (dead process but not cleaned up)", zombie_count);
+    }
+
+    Either::Left(Json(AdminStatusResponse {
+        total_clients: clients.len(),
+        total_sessions: sessions.len(),
+        active_websockets: active_ws_count,
+        clients,
+        sessions,
+    }))
 }
 
 pub fn api_service(data: Data<RuntimeApiData>) -> impl HttpServiceFactory {
@@ -482,8 +566,9 @@ pub fn api_service(data: Data<RuntimeApiData>) -> impl HttpServiceFactory {
             pair_host,
             get_apps,
             get_app_image,
-            get_sessions,  // Our addition for Agent Sandboxes monitoring
         ])
+        .service(get_sessions)  // Session monitoring
+        .service(get_admin_status)  // Full admin status with all clients + sessions
 }
 
 async fn into_undetailed_host(

@@ -31,6 +31,9 @@ use crate::{
     },
 };
 
+#[cfg(feature = "network")]
+use uuid::Uuid;
+
 fn hash(algorithm: HashAlgorithm, data: &[u8], output: &mut [u8]) {
     match algorithm {
         HashAlgorithm::Sha1 => {
@@ -144,13 +147,21 @@ pub fn generate_new_client() -> Result<ClientAuth, ErrorStack> {
     let private_key_pem =
         String::from_utf8(key.private_key_to_pem_pkcs8()?).expect("valid openssl private key pem");
 
-    // Build X.509 Name
+    // Build X.509 Name with UNIQUE Common Name per certificate
+    // This ensures Wolf can differentiate between multiple concurrent moonlight-web clients
+    // Without this, all certificates have same subject/issuer and Wolf's X509_V_FLAG_PARTIAL_CHAIN
+    // verification matches them all as the same client, limiting to one session
+    #[cfg(feature = "network")]
+    let unique_cn = format!("moonlight-{}", Uuid::new_v4());
+    #[cfg(not(feature = "network"))]
+    let unique_cn = "example.com".to_string();
+
     let mut name = X509NameBuilder::new()?;
     name.append_entry_by_text("C", "US")?;
     name.append_entry_by_text("ST", "CA")?;
     name.append_entry_by_text("L", "San Francisco")?;
-    name.append_entry_by_text("O", "Example Corp")?;
-    name.append_entry_by_text("CN", "example.com")?;
+    name.append_entry_by_text("O", "Moonlight Client")?;
+    name.append_entry_by_text("CN", &unique_cn)?;
     let name = name.build();
 
     // Build certificate
