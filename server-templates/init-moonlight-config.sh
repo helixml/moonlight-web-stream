@@ -11,6 +11,9 @@ CONFIG_TEMPLATE="/app/templates/config.json.template"
 if [ ! -f "$DATA_FILE" ] || [ ! -s "$DATA_FILE" ]; then
     echo "🔧 Initializing moonlight-web data.json from template..."
     cp "$DATA_TEMPLATE" "$DATA_FILE"
+    # Substitute hostname
+    HELIX_HOSTNAME=${HELIX_HOSTNAME:-local}
+    sed -i "s/{{HELIX_HOSTNAME}}/$HELIX_HOSTNAME/g" "$DATA_FILE"
     echo "✅ moonlight-web data.json initialized"
 else
     echo "ℹ️  moonlight-web data.json already exists, skipping initialization"

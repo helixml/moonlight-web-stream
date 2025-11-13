@@ -81,8 +81,8 @@ COPY --from=builder /build/server-templates/data.json.template /app/templates/
 COPY --from=builder /build/server-templates/config.json.template /app/templates/
 
 # Copy init script to /app/server (will be available both from image and bind-mount)
-COPY --from=builder /build/server-templates/init-moonlight-config.sh /app/server/
-RUN chmod +x /app/server/init-moonlight-config.sh
+COPY --from=builder /build/server-templates/init-moonlight-config.sh /app/
+RUN chmod +x /app/init-moonlight-config.sh
 
 # Enable trace logging for debugging UDP/streaming issues
 ENV RUST_LOG=moonlight_common=trace,moonlight_web=trace
