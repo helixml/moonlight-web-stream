@@ -124,10 +124,16 @@ if [ -n "$MOONLIGHT_INTERNAL_PAIRING_PIN" ]; then
         exec 3<&-
         exec 3>&-
 
-        if grep -q '"Paired"' /tmp/pair-response.log; then
+        # Wait a moment for pairing to complete and data.json to be updated
+        sleep 1
+        
+        # Check if pairing succeeded by looking for paired section in data.json
+        # (more reliable than parsing chunked HTTP response)
+        if grep -q '"paired"' "$DATA_FILE"; then
             echo "✅ Auto-pairing with Wolf completed successfully"
         else
-            echo "⚠️  Auto-pairing may have failed, check logs: cat /tmp/pair-response.log"
+            echo "❌ Auto-pairing failed - paired section not found in data.json"
+            echo "   Check pairing response: cat /tmp/pair-response.log"
         fi
     else
         echo "ℹ️  moonlight-web already paired with Wolf, skipping auto-pair"
